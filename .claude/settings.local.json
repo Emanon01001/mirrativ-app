@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:crates.io)",
+      "Bash(node:*)",
+      "Bash(cargo check:*)",
+      "Bash(npx tauri build:*)"
+    ]
+  }
+}
