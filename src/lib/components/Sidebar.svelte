@@ -1,12 +1,4 @@
 <script lang="ts">
-  import { invoke } from "@tauri-apps/api/core";
-  import { onDestroy } from "svelte";
-  import {
-    llstreamError,
-    llstreamRelayUrl,
-    llstreamWsAudioUrl,
-    llstreamWsVideoUrl
-  } from "$lib/stores/llstream";
 
   let { page, onNavigate, noticeCounts, user, authed } = $props<{
     page: string;
@@ -16,75 +8,6 @@
     authed: boolean;
   }>();
 
-  let relayBusy = $state(false);
-  let ffmpegLog = $state("");
-
-  const stopRelays = async () => {
-    llstreamError.set("");
-    try {
-      await invoke("stop_llstream_video_hls");
-    } catch {}
-    try {
-      await invoke("stop_llstream_audio_hls");
-    } catch {}
-    llstreamRelayUrl.set("");
-  };
-
-  const startVideoRelay = async () => {
-    const wsUrl = $llstreamWsVideoUrl.trim();
-    if (!wsUrl) {
-      llstreamError.set("WS video URL を入力してください");
-      return;
-    }
-    relayBusy = true;
-    ffmpegLog = "";
-    llstreamError.set("");
-    try {
-      await stopRelays();
-      const res: any = await invoke("start_llstream_video_hls", { wsUrl });
-      const playlist = res?.playlistUrl ?? res?.playlist_url ?? "";
-      if (!playlist) {
-        llstreamError.set("ローカルHLS URLの取得に失敗しました");
-      } else {
-        llstreamRelayUrl.set(playlist);
-      }
-    } catch (e) {
-      llstreamError.set(e instanceof Error ? e.message : String(e));
-    } finally {
-      relayBusy = false;
-    }
-  };
-
-  const startAudioRelay = async () => {
-    const wsUrl = $llstreamWsAudioUrl.trim();
-    if (!wsUrl) {
-      llstreamError.set("WS audio URL を入力してください");
-      return;
-    }
-    relayBusy = true;
-    ffmpegLog = "";
-    llstreamError.set("");
-    try {
-      await stopRelays();
-      const res: any = await invoke("start_llstream_audio_hls", { wsUrl });
-      const playlist = res?.playlistUrl ?? res?.playlist_url ?? "";
-      ffmpegLog = res?.ffmpeg_log ?? res?.ffmpegLog ?? "";
-      if (!playlist) {
-        llstreamError.set("音声HLS URLの取得に失敗しました");
-      } else {
-        llstreamRelayUrl.set(playlist);
-      }
-    } catch (e) {
-      llstreamError.set(e instanceof Error ? e.message : String(e));
-    } finally {
-      relayBusy = false;
-    }
-  };
-
-  onDestroy(() => {
-    void stopRelays();
-    ffmpegLog = "";
-  });
 
   const items = [
     { id: "home", label: "ホーム", icon: "◆" },
@@ -92,7 +15,8 @@
     { id: "follow", label: "フォロー", icon: "◎" },
     { id: "watch", label: "視聴", icon: "▶" },
     { id: "profile", label: "プロフィール", icon: "▣" },
-    { id: "settings", label: "設定", icon: "⚙" }
+    { id: "settings", label: "設定", icon: "⚙" },
+    { id: "debugpage", label: "テストページ", icon: "🧪" }
   ];
 
   const totalNotice = $derived(
@@ -118,8 +42,8 @@
       {/if}
     </div>
     <div class="user-meta">
-      <p class="user-name">{user?.name ?? "未ログイン"}</p>
-      <p class="user-id">{authed ? `@${user?.user_id ?? "-"}` : "セッション未設定"}</p>
+      <p class="user-name">{user?.name ?? "ゲスト"}</p>
+      <p class="user-id">{authed ? `@${user?.user_id ?? "-"}` : "ゲスト"}</p>
     </div>
   </div>
 

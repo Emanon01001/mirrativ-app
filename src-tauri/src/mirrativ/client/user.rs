@@ -264,6 +264,6 @@ pub async fn login(
 
 #[tauri::command]
 pub async fn reset_session(state: tauri::State<'_, MirrativClient>) -> Result<(), String> {
-    state.login(String::new(), String::new()).await;
+    state.reset().await;
     Ok(())
 }

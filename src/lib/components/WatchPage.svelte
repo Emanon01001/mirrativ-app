@@ -2,12 +2,6 @@
   import { invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
   import { onDestroy, onMount } from "svelte";
-  import {
-    llstreamError,
-    llstreamRelayUrl,
-    llstreamWsAudioUrl,
-    llstreamWsVideoUrl
-  } from "$lib/stores/llstream";
   import WatchHeader from "$lib/components/watch/WatchHeader.svelte";
   import WatchJoin from "$lib/components/watch/WatchJoin.svelte";
   import WatchPlayer from "$lib/components/watch/WatchPlayer.svelte";
@@ -82,8 +76,6 @@
     streamStatus = null;
     liveInfo = null;
     streamError = "";
-    llstreamRelayUrl.set("");
-    llstreamError.set("");
     error = "";
     usingPreview = false;
     autoplayBlocked = false;
@@ -214,7 +206,7 @@
   });
 
   const streamUrl = $derived(
-    $llstreamRelayUrl || getStreamUrl(streamStatus) || liveInfo?.preview?.streaming_url_hls || ""
+    getStreamUrl(streamStatus) || liveInfo?.preview?.streaming_url_hls || ""
   );
 
   const liveInfoView = $derived.by(() => buildLiveInfoView(liveInfo, polling));
@@ -230,18 +222,6 @@
   const giftRankingView = $derived.by(() => buildGiftRankingView(giftRanking, giftRankingExtra));
 
   const pollingDetails = $derived.by(() => (polling ? flattenForDisplay(polling) : []));
-
-  $effect(() => {
-    const v = streamStatus?.streaming_url_llstream_video || streamStatus?.llstream_video_url || "";
-    if (v && !$llstreamWsVideoUrl) {
-      llstreamWsVideoUrl.set(v);
-    }
-
-    const a = streamStatus?.streaming_url_llstream_audio || streamStatus?.llstream_audio_url || "";
-    if (a && !$llstreamWsAudioUrl) {
-      llstreamWsAudioUrl.set(a);
-    }
-  });
 
   const cleanupPlayer = async () => {
     try {
@@ -397,7 +377,6 @@
     }
     usingPreview = false;
     error = "";
-    llstreamError.set("");
     const seq = ++connectSeq;
     let connectTimer: ReturnType<typeof setTimeout> | null = null;
     if (!silent) {
@@ -454,11 +433,6 @@
 
       if (!getStreamUrl(streamStatus)) {
         await fetchStreamStatus(targetLiveId, seq);
-      }
-
-      if (connectSeq === seq) {
-        llstreamRelayUrl.set("");
-        llstreamError.set("");
       }
 
       if (!silent) {
@@ -634,11 +608,7 @@
 
   onDestroy(() => {
     stopKeepAlive();
-    void invoke("stop_llstream_video_hls").catch(() => {});
-    void invoke("stop_llstream_audio_hls").catch(() => {});
     void invoke("stop_mpv").catch(() => {});
-    llstreamRelayUrl.set("");
-    llstreamError.set("");
     void cleanupPlayer();
     if (playerSyncTimer) clearInterval(playerSyncTimer);
     playerSyncTimer = null;
@@ -697,7 +667,6 @@
     rotateOptions={rotateOptions}
     loading={loading}
     streamError={streamError}
-    llstreamError={$llstreamError}
     onOpenPlayer={openPlayerWindow}
     onStart={() => setupPlayer(streamUrl)}
     onStop={stopPlayback}

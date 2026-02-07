@@ -16,13 +16,14 @@ pub struct MirrativClient {
     lang: String,
     mr_id: RwLock<String>,
     unique: RwLock<String>,
+    authed: RwLock<bool>,
     custom_headers: HeaderMap,
 }
 
 impl MirrativClient {
     pub fn new() -> Self {
         let client = Client::builder()
-            .cookie_store(true)
+            .cookie_store(false)
             .timeout(Duration::from_secs(10))
             .build()
             .expect("Failed to create HTTP client");
@@ -34,6 +35,7 @@ impl MirrativClient {
             lang: "ja".to_string(),
             mr_id: RwLock::new(String::new()),
             unique: RwLock::new(String::new()),
+            authed: RwLock::new(false),
             custom_headers,
         }
     }
@@ -236,8 +238,22 @@ impl MirrativClient {
 
     /// ログイン（Cookie設定）
     pub async fn login(&self, mr_id: String, unique: String) {
+        let is_authed = !mr_id.is_empty() && !unique.is_empty();
         *self.mr_id.write().await = mr_id;
         *self.unique.write().await = unique;
+        *self.authed.write().await = is_authed;
+    }
+
+    /// 認証済みかどうか（ゲストセッションは false）
+    pub(crate) async fn is_authed(&self) -> bool {
+        *self.authed.read().await
+    }
+
+    /// セッションをリセット（authed フラグもクリア）
+    pub async fn reset(&self) {
+        *self.mr_id.write().await = String::new();
+        *self.unique.write().await = String::new();
+        *self.authed.write().await = false;
     }
 
     pub(crate) async fn has_session(&self) -> bool {

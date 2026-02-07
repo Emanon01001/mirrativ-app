@@ -1,8 +1,10 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 use tauri::webview::PageLoadEvent;
 
 use super::core::MirrativClient;
+
+const SESSION_FILE: &str = "session.json";
 
 const AUTH_WINDOW_LABEL: &str = "twitter-auth";
 const MIRRATIV_LOGIN_URL: &str = "https://www.mirrativ.com/social/twitter";
@@ -33,7 +35,7 @@ pub async fn open_twitter_login(app: AppHandle) -> Result<(), String> {
         ),
     )
     .title("Mirrativ - Twitterでログイン")
-    .inner_size(480.0, 720.0)
+    .inner_size(1080.0, 720.0)
     .resizable(true)
     .on_new_window(move |url, _features| {
         // window.open() や target="_blank" のリンクを同じウィンドウ内で遷移させる
@@ -163,6 +165,54 @@ fn inject_popup_override(window: &WebviewWindow) {
 pub async fn close_twitter_login(app: AppHandle) -> Result<(), String> {
     if let Some(window) = app.get_webview_window(AUTH_WINDOW_LABEL) {
         window.close().map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+// ----- セッション永続化 -----
+
+#[derive(Serialize, Deserialize)]
+struct SavedSession {
+    mr_id: String,
+    unique: String,
+}
+
+fn session_path(app: &AppHandle) -> Result<std::path::PathBuf, String> {
+    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    Ok(dir.join(SESSION_FILE))
+}
+
+#[tauri::command]
+pub async fn save_session(app: AppHandle, mr_id: String, unique: String) -> Result<(), String> {
+    let path = session_path(&app)?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let data = SavedSession { mr_id, unique };
+    let json = serde_json::to_string(&data).map_err(|e| e.to_string())?;
+    std::fs::write(&path, json).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn load_session(app: AppHandle) -> Result<Option<(String, String)>, String> {
+    let path = session_path(&app)?;
+    if !path.exists() {
+        return Ok(None);
+    }
+    let json = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+    let data: SavedSession = serde_json::from_str(&json).map_err(|e| e.to_string())?;
+    if data.mr_id.is_empty() || data.unique.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some((data.mr_id, data.unique)))
+}
+
+#[tauri::command]
+pub async fn delete_session(app: AppHandle) -> Result<(), String> {
+    let path = session_path(&app)?;
+    if path.exists() {
+        std::fs::remove_file(&path).map_err(|e| e.to_string())?;
     }
     Ok(())
 }

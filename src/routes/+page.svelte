@@ -9,8 +9,9 @@
   import FollowPage from "$lib/components/FollowPage.svelte";
   import ProfilePage from "$lib/components/ProfilePage.svelte";
   import WatchPage from "$lib/components/WatchPage.svelte";
+  import Debugpage from "$lib/components/debugpage.svelte";
 
-  type Page = "home" | "search" | "follow" | "watch" | "profile" | "settings";
+  type Page = "home" | "search" | "follow" | "watch" | "profile" | "settings" | "debugpage";
 
   let page = $state<Page>("home");
   let selectedLiveId = $state("");
@@ -28,7 +29,7 @@
   let noticeError = $state("");
 
   let noticeTimer: ReturnType<typeof setInterval> | null = null;
-  let savedSessionStatus = $state<"unknown" | "none" | "saved">("unknown");
+  let autoLoginLoading = $state(false);
   let twitterLoginLoading = $state(false);
   let authUnlisten: (() => void) | null = null;
 
@@ -54,6 +55,8 @@
           return "プロフィール";
         case "settings":
           return "設定";
+        case "debugpage":
+          return "テストページ";
         default:
           return "Mirrativ";
       }
@@ -108,11 +111,9 @@
       authed = true;
 
       if (remember) {
-        localStorage.setItem("mirrativ.mr_id", mrId.trim());
-        localStorage.setItem("mirrativ.unique", unique.trim());
+        await invoke("save_session", { mrId: mrId.trim(), unique: unique.trim() });
       } else {
-        localStorage.removeItem("mirrativ.mr_id");
-        localStorage.removeItem("mirrativ.unique");
+        await invoke("delete_session");
       }
 
       await refreshUser();
@@ -133,35 +134,48 @@
     loginError = "";
   };
 
-  const loadSavedSession = () => {
-    const savedMrId = localStorage.getItem("mirrativ.mr_id");
-    const savedUnique = localStorage.getItem("mirrativ.unique");
-    if (savedMrId && savedUnique) {
-      mrId = savedMrId;
-      unique = savedUnique;
-      remember = true;
-      savedSessionStatus = "saved";
-    } else {
-      savedSessionStatus = "none";
-    }
-  };
+  let hasSavedSession = $state(false);
 
   const handleLogout = async () => {
     await invoke("reset_session");
+    // ゲストセッションを再取得（配信閲覧用）
+    await invoke("bootstrap_guest");
     authed = false;
-    currentUser = null;
     noticeCounts = null;
     if (noticeTimer) clearInterval(noticeTimer);
     noticeTimer = null;
+    // mrId, unique, currentUser は保存セッション表示用に残す
+    hasSavedSession = (await invoke<[string, string] | null>("load_session")) !== null;
   };
 
-  const clearSavedSession = () => {
-    localStorage.removeItem("mirrativ.mr_id");
-    localStorage.removeItem("mirrativ.unique");
+  const handleRelogin = async () => {
+    const saved = await invoke<[string, string] | null>("load_session");
+    if (!saved) return;
+    loginLoading = true;
+    loginError = "";
+    try {
+      const [savedMrId, savedUnique] = saved;
+      await invoke("login", { mrId: savedMrId, unique: savedUnique });
+      mrId = savedMrId;
+      unique = savedUnique;
+      authed = true;
+      await refreshUser();
+      await refreshNotices();
+      if (noticeTimer) clearInterval(noticeTimer);
+      noticeTimer = setInterval(refreshNotices, 60_000);
+    } catch (e) {
+      loginError = e instanceof Error ? e.message : String(e);
+    } finally {
+      loginLoading = false;
+    }
+  };
+
+  const handleDeleteSession = async () => {
+    await invoke("delete_session");
+    hasSavedSession = false;
     mrId = "";
     unique = "";
-    remember = false;
-    savedSessionStatus = "none";
+    currentUser = null;
   };
 
   const handleTwitterLogin = async () => {
@@ -176,9 +190,27 @@
   };
 
   onMount(async () => {
-    const savedMrId = localStorage.getItem("mirrativ.mr_id");
-    const savedUnique = localStorage.getItem("mirrativ.unique");
-    savedSessionStatus = savedMrId && savedUnique ? "saved" : "none";
+    // 保存済みセッションがあれば自動ログイン
+    const saved = await invoke<[string, string] | null>("load_session");
+    hasSavedSession = saved !== null;
+    if (saved) {
+      autoLoginLoading = true;
+      try {
+        const [savedMrId, savedUnique] = saved;
+        await invoke("login", { mrId: savedMrId, unique: savedUnique });
+        mrId = savedMrId;
+        unique = savedUnique;
+        authed = true;
+        await refreshUser();
+        await refreshNotices();
+        noticeTimer = setInterval(refreshNotices, 60_000);
+      } catch (e) {
+        console.warn("自動ログイン失敗", e);
+        await invoke("delete_session");
+      } finally {
+        autoLoginLoading = false;
+      }
+    }
 
     // Twitter認証の成功イベントをリスン
     authUnlisten = await listen<AuthResult>("auth://login-success", async (event) => {
@@ -190,8 +222,7 @@
         twitterLoginLoading = false;
 
         if (remember) {
-          localStorage.setItem("mirrativ.mr_id", result.mr_id);
-          localStorage.setItem("mirrativ.unique", result.unique);
+          await invoke("save_session", { mrId: result.mr_id, unique: result.unique });
         }
 
         await refreshUser();
@@ -270,32 +301,79 @@
         <ProfilePage onOpenLive={openLive} />
       {:else if page === "settings"}
         <div class="settings">
-          <h2>セッション設定（任意）</h2>
-          <p>Androidアプリのセッション情報は利用しない方針です。必要時のみ手動で入力してください。</p>
-          <div class="settings-actions">
-            <button class="ghost" onclick={loadSavedSession}>保存済みを読み込む</button>
-            <button class="ghost" onclick={clearSavedSession}>保存データ削除</button>
-          </div>
-          <p class="saved-status">
-            保存状態: {savedSessionStatus === "saved" ? "保存あり" : savedSessionStatus === "none" ? "保存なし" : "確認中"}
-          </p>
-
-          <LoginPage
-            bind:mrId
-            bind:unique
-            bind:remember
-            loading={loginLoading}
-            error={loginError}
-            onLogin={handleLogin}
-            onReset={handleReset}
-            onTwitterLogin={handleTwitterLogin}
-            {twitterLoginLoading}
-          />
-
-          <div class="settings-actions">
-            <button onclick={handleLogout} disabled={!authed}>ログアウト</button>
-          </div>
+          {#if autoLoginLoading}
+            <div class="auto-login-loading">
+              <p>自動ログイン中...</p>
+            </div>
+          {:else if authed}
+            <div class="session-info">
+              <div class="session-header">
+                {#if currentUser?.profile_image_url}
+                  <img class="session-avatar" src={currentUser.profile_image_url} alt="" />
+                {/if}
+                <div>
+                  <h2 class="session-name">{currentUser?.name ?? "ユーザー"}</h2>
+                  <p class="session-sub">ログイン中</p>
+                </div>
+              </div>
+              <div class="session-details">
+                <div class="session-row">
+                  <span class="session-label">MR_ID</span>
+                  <span class="session-value">{mrId}</span>
+                </div>
+              </div>
+            </div>
+            <div class="settings-actions">
+              <button class="danger" onclick={handleLogout}>ログアウト</button>
+              <button class="ghost" onclick={handleDeleteSession}>保存データ削除</button>
+            </div>
+          {:else if hasSavedSession}
+            <div class="session-info">
+              <div class="session-header">
+                {#if currentUser?.profile_image_url}
+                  <img class="session-avatar" src={currentUser.profile_image_url} alt="" />
+                {/if}
+                <div>
+                  <h2 class="session-name">{currentUser?.name ?? "ユーザー"}</h2>
+                  <p class="session-sub">ログアウト中</p>
+                </div>
+              </div>
+              <div class="session-details">
+                <div class="session-row">
+                  <span class="session-label">MR_ID</span>
+                  <span class="session-value">{mrId}</span>
+                </div>
+                <div class="session-row">
+                  <span class="session-label">UNIQUE (F)</span>
+                  <span class="session-value">{unique}</span>
+                </div>
+              </div>
+              <div class="settings-actions">
+                <button onclick={handleRelogin} disabled={loginLoading}>
+                  {loginLoading ? "ログイン中..." : "再ログイン"}
+                </button>
+                <button class="ghost" onclick={handleDeleteSession}>保存データ削除</button>
+              </div>
+              {#if loginError}
+                <p class="error">{loginError}</p>
+              {/if}
+            </div>
+          {:else}
+            <LoginPage
+              bind:mrId
+              bind:unique
+              bind:remember
+              loading={loginLoading}
+              error={loginError}
+              onLogin={handleLogin}
+              onReset={handleReset}
+              onTwitterLogin={handleTwitterLogin}
+              {twitterLoginLoading}
+            />
+          {/if}
         </div>
+      {:else if page == "debugpage"}
+        <Debugpage />
       {/if}
     </section>
   </main>
@@ -473,16 +551,100 @@
     cursor: pointer;
   }
 
-  .saved-status {
+  .session-saved-msg {
     margin: 0;
     color: var(--ink-600);
-    font-size: 0.85rem;
+    font-size: 0.9rem;
+  }
+
+  .error {
+    margin: 0;
+    color: var(--accent-700);
+    font-weight: 600;
+  }
+
+  .auto-login-loading {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 32px;
+    color: var(--ink-500);
+  }
+
+  .auto-login-loading p {
+    margin: 0;
+    font-weight: 600;
   }
 
   .settings .ghost {
     background: transparent;
     border: 1px solid rgba(16, 27, 30, 0.2);
     color: var(--ink-700);
+  }
+
+  .settings .danger {
+    background: var(--accent-500);
+    color: #fff;
+  }
+
+  .session-info {
+    display: grid;
+    gap: 16px;
+    padding: 20px;
+    border-radius: 20px;
+    background: var(--card-surface);
+  }
+
+  .session-header {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+  }
+
+  .session-avatar {
+    width: 48px;
+    height: 48px;
+    border-radius: 50%;
+    object-fit: cover;
+  }
+
+  .session-name {
+    margin: 0;
+    font-size: 1.1rem;
+  }
+
+  .session-sub {
+    margin: 0;
+    font-size: 0.8rem;
+    color: var(--ink-500);
+  }
+
+  .session-details {
+    display: grid;
+    gap: 8px;
+  }
+
+  .session-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 8px 12px;
+    border-radius: 10px;
+    background: rgba(15, 42, 39, 0.04);
+    font-size: 0.85rem;
+  }
+
+  .session-label {
+    color: var(--ink-500);
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    font-size: 0.75rem;
+    font-weight: 600;
+  }
+
+  .session-value {
+    color: var(--ink-700);
+    font-weight: 500;
   }
 
   .notice-error {

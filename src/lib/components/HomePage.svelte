@@ -18,6 +18,10 @@
   let error = $state("");
   let bannerLoading = $state(false);
   let bootstrapped = $state(false);
+  let observer: IntersectionObserver | null = null;
+  let sentinel: HTMLDivElement | null = null;
+  let sentinelVisible = $state(false);
+  let lastAutoCursor = $state<string | null>(null);
 
   const getTabId = (tab: any) =>
     tab?.id ?? tab?.tab_id ?? tab?.tab?.id ?? tab?.tab?.tab_id ?? null;
@@ -106,6 +110,7 @@
     error = "";
     currentCursor = null;
     nextCursor = null;
+    lastAutoCursor = null;
     try {
       const args: Record<string, any> = { tabId: String(tabId) };
       if (appId) args.appId = String(appId);
@@ -155,6 +160,25 @@
 
   onMount(() => {
     loadTabs();
+    if (sentinel) {
+      observer?.disconnect();
+      observer = new IntersectionObserver(
+        (entries) => {
+          sentinelVisible = entries.some((entry) => entry.isIntersecting);
+        },
+        { rootMargin: "400px 0px" }
+      );
+      observer.observe(sentinel);
+    }
+    return () => observer?.disconnect();
+  });
+
+  $effect(() => {
+    if (!sentinelVisible) return;
+    if (!nextCursor || loading || loadingMore) return;
+    if (nextCursor === lastAutoCursor) return;
+    lastAutoCursor = nextCursor;
+    loadMore();
   });
 </script>
 
@@ -233,6 +257,7 @@
     {:else if !loading && lives.length > 0}
       <span class="muted">これ以上の配信はありません</span>
     {/if}
+    <div class="load-sentinel" bind:this={sentinel} aria-hidden="true"></div>
   </div>
 </section>
 
@@ -350,26 +375,17 @@
     flex-wrap: wrap;
   }
 
+  .load-sentinel {
+    width: 100%;
+    height: 1px;
+  }
+
   .cursor {
     font-size: 0.75rem;
     color: var(--ink-500);
     word-break: break-all;
   }
-
-  .skeleton,
-  .empty {
-    padding: 20px;
-    border-radius: 16px;
-    background: rgba(16, 27, 30, 0.06);
-    color: var(--ink-600);
-  }
-
-  .error {
-    margin: 0;
-    color: var(--accent-700);
-    font-weight: 600;
-  }
-
+  
   .muted {
     color: var(--ink-500);
   }

@@ -30,18 +30,21 @@ pub async fn join_live(
 
     let status = status?;
 
-    let mut form = HashMap::new();
-    form.insert("live_id".to_string(), live_id);
-    form.insert("comment".to_string(), String::new());
-    form.insert("type".to_string(), "3".to_string());
+    // 認証済みの場合のみ入室コメントを送信（ゲストでは送らない）
+    if state.is_authed().await {
+        let mut form = HashMap::new();
+        form.insert("live_id".to_string(), live_id);
+        form.insert("comment".to_string(), String::new());
+        form.insert("type".to_string(), "3".to_string());
 
-    let _ = state
-        .post_json(
-            "https://www.mirrativ.com/api/live/live_comment",
-            form,
-            Some("live_view"),
-        )
-        .await;
+        let _ = state
+            .post_json(
+                "https://www.mirrativ.com/api/live/live_comment",
+                form,
+                Some("live_view"),
+            )
+            .await;
+    }
 
     Ok(status)
 }

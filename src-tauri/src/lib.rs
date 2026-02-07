@@ -1,10 +1,6 @@
 mod mirrativ;
-// mod llstream_video;
-// mod llstream_audio;
 mod mpv_player;
 use mirrativ::MirrativClient;
-// use llstream_video::VideoHlsManager;
-// use llstream_audio::AudioHlsManager;
 use mpv_player::MpvPlayerManager;
 use tauri::{Emitter, Manager, WindowEvent};
 
@@ -12,15 +8,11 @@ use tauri::{Emitter, Manager, WindowEvent};
 pub fn run() {
     mpv_player::init_main_thread_id();
     let client = MirrativClient::new();
-    // let video_hls = VideoHlsManager::default();
-    // let audio_hls = AudioHlsManager::default();
     let mpv_player = MpvPlayerManager::new();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .manage(client)
-        // .manage(video_hls)
-        // .manage(audio_hls)
         .manage(mpv_player)
         .on_window_event(|window, event| {
             match window.label() {
@@ -137,6 +129,9 @@ pub fn run() {
             mirrativ::client::user::reset_session,
             mirrativ::client::auth::open_twitter_login,
             mirrativ::client::auth::close_twitter_login,
+            mirrativ::client::auth::save_session,
+            mirrativ::client::auth::load_session,
+            mirrativ::client::auth::delete_session,
             // 複雑な操作
             mirrativ::client::complex::join_live,
             // MPV Player

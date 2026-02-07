@@ -70,15 +70,6 @@
       <button type="button" class="ghost" onclick={onReset}>クリア</button>
     </div>
   </form>
-
-  <div class="login-hint">
-    <h2>取得方法のヒント</h2>
-    <ol>
-      <li>AndroidのMirrativアプリでログイン</li>
-      <li>HTTPキャプチャでCookieの<code>mr_id</code>と<code>f</code>を確認</li>
-      <li>この画面に貼り付けて開始</li>
-    </ol>
-  </div>
 </section>
 
 <style>

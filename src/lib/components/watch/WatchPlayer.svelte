@@ -8,7 +8,6 @@
     rotateOptions,
     loading,
     streamError,
-    llstreamError,
     onOpenPlayer,
     onStart,
     onStop,
@@ -24,7 +23,6 @@
     rotateOptions: number[];
     loading: boolean;
     streamError: string;
-    llstreamError: string;
     onOpenPlayer: () => void;
     onStart: () => void;
     onStop: () => void;
@@ -102,9 +100,6 @@
   {/if}
   {#if streamError}
     <p class="error">{streamError}</p>
-  {/if}
-  {#if llstreamError}
-    <p class="error">{llstreamError}</p>
   {/if}
 </div>
 
