@@ -6,6 +6,19 @@
   import ErrorMessage from "$lib/components/ui/ErrorMessage.svelte";
 
   let { onOpenLive } = $props<{ onOpenLive: (live: any) => void }>();
+  type DetailItem = { label: string; value: string };
+  type CapabilityItem = { key: string; label: string; enabled: boolean };
+
+  const capabilityDefs = [
+    { key: "pip_enabled", label: "PiP" },
+    { key: "gift_ranking_enabled", label: "ギフトランキング" },
+    { key: "is_llstream_v1_subscribe", label: "LLStream視聴" },
+    { key: "is_llstream_v1_broadcast", label: "LLStream配信" },
+    { key: "karaoke_enabled", label: "カラオケ" },
+    { key: "moderator", label: "モデレーター" },
+    { key: "onboarding_twitter_enabled", label: "Twitter連携" },
+    { key: "game_app_icon_enabled", label: "ゲームアイコン" }
+  ] as const;
 
   let profile = $state<any>(null);
   let currency = $state<any>(null);
@@ -18,6 +31,95 @@
     const list = res?.lives ?? res?.live_list ?? res?.history ?? res?.data ?? [];
     return Array.isArray(list) ? list : [];
   };
+
+  const toFiniteNumber = (value: unknown): number | null => {
+    if (typeof value === "number" && Number.isFinite(value)) return value;
+    if (typeof value === "string" && value.trim()) {
+      const parsed = Number(value);
+      if (Number.isFinite(parsed)) return parsed;
+    }
+    return null;
+  };
+
+  const formatNumber = (value: unknown) => {
+    const num = toFiniteNumber(value);
+    if (num === null) return "-";
+    return num.toLocaleString();
+  };
+
+  const formatUnix = (value: unknown) => {
+    const seconds = toFiniteNumber(value);
+    if (seconds === null || seconds <= 0) return "-";
+    const date = new Date(seconds * 1000);
+    if (Number.isNaN(date.getTime())) return "-";
+    return date.toLocaleString();
+  };
+
+  const formatBirthday = (birthday: unknown, visible: unknown) => {
+    if (visible === false || visible === 0 || visible === "0") return "非公開";
+    const raw = typeof birthday === "string" ? birthday.trim() : "";
+    if (!raw) return "-";
+    if (raw.length === 4) return `${raw.slice(0, 2)}/${raw.slice(2)}`;
+    return raw;
+  };
+
+  const textOrDash = (value: unknown) => {
+    if (typeof value === "string" && value.trim()) return value.trim();
+    if (typeof value === "number" && Number.isFinite(value)) return String(value);
+    return "-";
+  };
+
+  const yesNo = (value: unknown, onLabel = "有効", offLabel = "無効") => {
+    if (value === true || value === 1 || value === "1") return onLabel;
+    return offLabel;
+  };
+
+  const capabilityEnabled = (key: string) => {
+    const raw = profile?.capabilities?.[key];
+    return raw === true || raw === 1 || raw === "1";
+  };
+
+  const profileDetails = $derived.by<DetailItem[]>(() => {
+    if (!profile) return [];
+    return [
+      { label: "ユーザーID", value: textOrDash(profile.user_id) },
+      {
+        label: "Twitter",
+        value: profile.twitter_screen_name ? `@${profile.twitter_screen_name}` : "-"
+      },
+      { label: "世代", value: textOrDash(profile.generation) },
+      { label: "誕生日", value: formatBirthday(profile.birthday, profile.is_visible_birthday) },
+      { label: "登録日", value: formatUnix(profile.registered_at) },
+      { label: "最終配信開始", value: formatUnix(profile.latest_live_started_at) }
+    ];
+  });
+
+  const activityDetails = $derived.by<DetailItem[]>(() => {
+    if (!profile) return [];
+    return [
+      { label: "累計視聴者", value: formatNumber(profile.total_viewer_num) },
+      { label: "配信リクエスト", value: formatNumber(profile.live_request_num) },
+      { label: "マイアプリ数", value: formatNumber(profile.my_app_num) },
+      { label: "録画機能", value: yesNo(profile.recording_enabled, "ON", "OFF") },
+      { label: "初配信済み", value: yesNo(profile.has_started_first_live, "はい", "いいえ") },
+      { label: "VIP公開", value: yesNo(profile.is_vip_public, "公開", "非公開") }
+    ];
+  });
+
+  const profileLinks = $derived.by<string[]>(() => {
+    if (!Array.isArray(profile?.links)) return [];
+    return profile.links
+      .map((item: any) => (typeof item?.url === "string" ? item.url.trim() : ""))
+      .filter(Boolean);
+  });
+
+  const capabilityDetails = $derived.by<CapabilityItem[]>(() =>
+    capabilityDefs.map((item) => ({
+      key: item.key,
+      label: item.label,
+      enabled: capabilityEnabled(item.key)
+    }))
+  );
 
   const loadProfile = async () => {
     loading = true;
@@ -85,10 +187,75 @@
         <h3>{profile.name ?? "名前なし"}</h3>
         <p class="desc">{profile.description ?? "自己紹介はまだありません"}</p>
         <div class="stats">
-          <span>フォロワー {profile.follower_num ?? 0}</span>
-          <span>フォロー {profile.following_num ?? 0}</span>
-          <span>配信数 {profile.live_count ?? 0}</span>
+          <span>フォロワー {formatNumber(profile.follower_num)}</span>
+          <span>フォロー {formatNumber(profile.following_num)}</span>
+          <span>配信数 {formatNumber(profile.live_count)}</span>
         </div>
+      </div>
+    </div>
+  {/if}
+
+  {#if !loading && profile}
+    <div class="detail-panels">
+      <div class="detail-card">
+        <h3>プロフィール詳細</h3>
+        <div class="detail-grid">
+          {#each profileDetails as item}
+            <div class="detail-item">
+              <span class="detail-label">{item.label}</span>
+              <span class="detail-value">{item.value}</span>
+            </div>
+          {/each}
+        </div>
+      </div>
+
+      <div class="detail-card">
+        <h3>配信・活動</h3>
+        <div class="detail-grid">
+          {#each activityDetails as item}
+            <div class="detail-item">
+              <span class="detail-label">{item.label}</span>
+              <span class="detail-value">{item.value}</span>
+            </div>
+          {/each}
+        </div>
+      </div>
+    </div>
+
+    <div class="detail-card">
+      <h3>リンク</h3>
+      {#if profileLinks.length === 0}
+        <p class="muted">リンクは未設定です</p>
+      {:else}
+        <ul class="link-list">
+          {#each profileLinks as url}
+            <li>
+              <a href={url} target="_blank" rel="noreferrer">{url}</a>
+            </li>
+          {/each}
+        </ul>
+      {/if}
+    </div>
+
+    <div class="detail-panels">
+      <div class="detail-card">
+        <h3>配信説明文</h3>
+        <p class="multiline">{profile.live_description ?? "未設定"}</p>
+      </div>
+      <div class="detail-card">
+        <h3>お礼メッセージ</h3>
+        <p class="multiline">{profile.custom_thanks_message ?? "未設定"}</p>
+      </div>
+    </div>
+
+    <div class="detail-card">
+      <h3>主要機能フラグ</h3>
+      <div class="capability-list">
+        {#each capabilityDetails as item}
+          <span class="capability-badge {item.enabled ? 'enabled' : 'disabled'}">
+            {item.label}: {item.enabled ? "ON" : "OFF"}
+          </span>
+        {/each}
       </div>
     </div>
   {/if}
@@ -214,6 +381,110 @@
     gap: 12px;
     font-size: 0.85rem;
     color: var(--ink-600);
+    flex-wrap: wrap;
+  }
+
+  .detail-panels {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+    gap: 14px;
+  }
+
+  .detail-card {
+    padding: 16px;
+    border-radius: 18px;
+    background: rgba(16, 27, 30, 0.04);
+    display: grid;
+    gap: 10px;
+  }
+
+  .detail-card h3 {
+    margin: 0;
+    font-size: 1rem;
+  }
+
+  .detail-grid {
+    display: grid;
+    gap: 8px;
+  }
+
+  .detail-item {
+    display: grid;
+    grid-template-columns: 140px 1fr;
+    gap: 8px;
+    align-items: center;
+    padding: 8px 10px;
+    border-radius: 10px;
+    background: #fff;
+    box-shadow: var(--shadow-soft);
+    min-width: 0;
+  }
+
+  .detail-label {
+    color: var(--ink-500);
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    font-weight: 600;
+  }
+
+  .detail-value {
+    color: var(--ink-700);
+    font-size: 0.9rem;
+    font-weight: 600;
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+
+  .link-list {
+    margin: 0;
+    padding-left: 18px;
+    display: grid;
+    gap: 6px;
+  }
+
+  .link-list a {
+    color: var(--ink-700);
+    text-decoration: underline;
+    text-decoration-color: rgba(16, 27, 30, 0.35);
+    overflow-wrap: anywhere;
+  }
+
+  .multiline {
+    margin: 0;
+    white-space: pre-wrap;
+    line-height: 1.5;
+    color: var(--ink-700);
+    background: #fff;
+    border-radius: 12px;
+    padding: 12px;
+    box-shadow: var(--shadow-soft);
+  }
+
+  .capability-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .capability-badge {
+    display: inline-flex;
+    align-items: center;
+    border-radius: 999px;
+    padding: 6px 12px;
+    font-size: 0.78rem;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+  }
+
+  .capability-badge.enabled {
+    background: rgba(36, 152, 126, 0.18);
+    color: #0f5e4d;
+  }
+
+  .capability-badge.disabled {
+    background: rgba(16, 27, 30, 0.1);
+    color: var(--ink-600);
   }
 
   .wallet {
@@ -300,6 +571,11 @@
   @media (max-width: 720px) {
     .profile-card {
       grid-template-columns: 1fr;
+    }
+
+    .detail-item {
+      grid-template-columns: 1fr;
+      gap: 4px;
     }
   }
 </style>

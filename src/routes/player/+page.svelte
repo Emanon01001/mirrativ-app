@@ -11,6 +11,8 @@
   let resizeObserver: ResizeObserver | null = null;
   let pollTimer: ReturnType<typeof setInterval> | null = null;
   let unlisten: (() => void) | null = null;
+  let refreshInFlight = false;
+  let positionUpdateScheduled = false;
 
   type PlayerInfo = {
     is_playing: boolean;
@@ -33,8 +35,17 @@
     isPlaying = Boolean(info?.is_playing);
     currentUrl = info?.current_url ?? null;
     if (isPlaying) {
-      void updatePlayerPosition();
+      scheduleUpdatePlayerPosition();
     }
+  };
+
+  const scheduleUpdatePlayerPosition = () => {
+    if (positionUpdateScheduled) return;
+    positionUpdateScheduled = true;
+    requestAnimationFrame(() => {
+      positionUpdateScheduled = false;
+      void updatePlayerPosition();
+    });
   };
 
   const updatePlayerPosition = async () => {
@@ -57,9 +68,15 @@
   };
 
   const refresh = async () => {
-    await fetchPlayerInfo();
-    if (isPlaying) {
-      await updatePlayerPosition();
+    if (refreshInFlight) return;
+    refreshInFlight = true;
+    try {
+      await fetchPlayerInfo();
+      if (isPlaying) {
+        await updatePlayerPosition();
+      }
+    } finally {
+      refreshInFlight = false;
     }
   };
 
@@ -91,7 +108,7 @@
   onMount(() => {
     void refresh();
 
-    const handleUpdate = () => void updatePlayerPosition();
+    const handleUpdate = () => scheduleUpdatePlayerPosition();
     window.addEventListener("resize", handleUpdate);
     window.addEventListener("scroll", handleUpdate, true);
 
@@ -101,8 +118,9 @@
     }
 
     pollTimer = setInterval(() => {
+      if (document.visibilityState !== "visible") return;
       void refresh();
-    }, 1500);
+    }, 4000);
 
     void (async () => {
       try {

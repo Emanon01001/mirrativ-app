@@ -7,6 +7,19 @@ pub async fn join_live(
     state: tauri::State<'_, MirrativClient>,
     live_id: String,
 ) -> Result<Value, String> {
+    // 入室通知トリガー: live_comment(type=3)
+    let mut join_form = HashMap::new();
+    join_form.insert("live_id".to_string(), live_id.clone());
+    join_form.insert("comment".to_string(), String::new());
+    join_form.insert("type".to_string(), "3".to_string());
+    state
+        .post_json(
+            "https://www.mirrativ.com/api/live/live_comment",
+            join_form,
+            Some("live_view"),
+        )
+        .await?;
+
     let info_url = format!("https://www.mirrativ.com/api/live/live?live_id={}", live_id);
     let notice_url = format!(
         "https://www.mirrativ.com/api/event/notice?type=2&live_id={}",
@@ -29,22 +42,5 @@ pub async fn join_live(
     );
 
     let status = status?;
-
-    // 認証済みの場合のみ入室コメントを送信（ゲストでは送らない）
-    if state.is_authed().await {
-        let mut form = HashMap::new();
-        form.insert("live_id".to_string(), live_id);
-        form.insert("comment".to_string(), String::new());
-        form.insert("type".to_string(), "3".to_string());
-
-        let _ = state
-            .post_json(
-                "https://www.mirrativ.com/api/live/live_comment",
-                form,
-                Some("live_view"),
-            )
-            .await;
-    }
-
     Ok(status)
 }

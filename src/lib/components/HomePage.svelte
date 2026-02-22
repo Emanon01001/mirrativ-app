@@ -5,7 +5,10 @@
   import Skeleton from "$lib/components/ui/Skeleton.svelte";
   import ErrorMessage from "$lib/components/ui/ErrorMessage.svelte";
 
-  let { onOpenLive } = $props<{ onOpenLive: (live: any) => void }>();
+  let { onOpenLive, onTabsLoaded } = $props<{
+    onOpenLive: (live: any) => void;
+    onTabsLoaded?: (tabs: any[]) => void;
+  }>();
 
   let tabs = $state<any[]>([]);
   let selectedTab = $state<any>(null);
@@ -122,7 +125,7 @@
 
       const livesRes = await invoke("get_catalog_lives", args);
       applyLivesResponse(livesRes, true);
-
+      onTabsLoaded?.(livesRes);
       const bannersRes = await invoke("get_catalog_banners", args);
       banners = extractList(bannersRes, ["banners", "banner_list", "data", "catalog_banners"]);
     } catch (e) {

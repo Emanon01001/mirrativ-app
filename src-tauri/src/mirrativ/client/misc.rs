@@ -26,6 +26,9 @@ pub async fn get_tooltip_start_live_button(
     state: tauri::State<'_, MirrativClient>,
 ) -> Result<Value, String> {
     state
-        .fetch_json("https://www.mirrativ.com/api/tooltip/start_live_button", None)
+        .fetch_json(
+            "https://www.mirrativ.com/api/tooltip/start_live_button",
+            None,
+        )
         .await
 }

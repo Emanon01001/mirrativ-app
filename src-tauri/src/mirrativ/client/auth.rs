@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 use tauri::webview::PageLoadEvent;
+use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 
 use super::core::MirrativClient;
 
@@ -30,9 +30,7 @@ pub async fn open_twitter_login(app: AppHandle) -> Result<(), String> {
     WebviewWindowBuilder::new(
         &app,
         AUTH_WINDOW_LABEL,
-        WebviewUrl::External(
-            url::Url::parse(MIRRATIV_LOGIN_URL).map_err(|e| e.to_string())?,
-        ),
+        WebviewUrl::External(url::Url::parse(MIRRATIV_LOGIN_URL).map_err(|e| e.to_string())?),
     )
     .title("Mirrativ - Twitterでログイン")
     .inner_size(1080.0, 720.0)
@@ -65,7 +63,8 @@ pub async fn open_twitter_login(app: AppHandle) -> Result<(), String> {
         let is_callback = url::Url::parse(&url_str)
             .ok()
             .map(|u| {
-                let is_mirrativ = u.host_str()
+                let is_mirrativ = u
+                    .host_str()
                     .map(|h| h.contains("mirrativ.com"))
                     .unwrap_or(false);
                 is_mirrativ && u.path().starts_with("/social/twitter/callback")
@@ -84,8 +83,7 @@ pub async fn open_twitter_login(app: AppHandle) -> Result<(), String> {
             // Cookie が設定されるまで少し待つ
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
-            let mirrativ_url = url::Url::parse("https://www.mirrativ.com/")
-                .expect("hardcoded URL");
+            let mirrativ_url = url::Url::parse("https://www.mirrativ.com/").expect("hardcoded URL");
 
             match window_clone.cookies_for_url(mirrativ_url) {
                 Ok(cookies) => {
@@ -177,6 +175,96 @@ struct SavedSession {
     unique: String,
 }
 
+#[cfg(windows)]
+fn encrypt_session_bytes(plain: &[u8]) -> Result<Vec<u8>, String> {
+    use windows::core::w;
+    use windows::Win32::Foundation::{HLOCAL, LocalFree};
+    use windows::Win32::Security::Cryptography::{
+        CryptProtectData, CRYPTPROTECT_UI_FORBIDDEN, CRYPT_INTEGER_BLOB,
+    };
+
+    let input = CRYPT_INTEGER_BLOB {
+        cbData: plain.len() as u32,
+        pbData: plain.as_ptr() as *mut u8,
+    };
+    let mut output = CRYPT_INTEGER_BLOB::default();
+
+    unsafe {
+        CryptProtectData(
+            &input,
+            w!("Mirrativ Session"),
+            None,
+            None,
+            None,
+            CRYPTPROTECT_UI_FORBIDDEN,
+            &mut output,
+        )
+        .map_err(|e| format!("failed to encrypt session: {}", e))?;
+
+        let encrypted = std::slice::from_raw_parts(output.pbData, output.cbData as usize).to_vec();
+        let _ = LocalFree(Some(HLOCAL(output.pbData as _)));
+        Ok(encrypted)
+    }
+}
+
+#[cfg(windows)]
+fn decrypt_session_bytes(cipher: &[u8]) -> Result<Vec<u8>, String> {
+    use windows::Win32::Foundation::{HLOCAL, LocalFree};
+    use windows::Win32::Security::Cryptography::{
+        CryptUnprotectData, CRYPTPROTECT_UI_FORBIDDEN, CRYPT_INTEGER_BLOB,
+    };
+
+    let input = CRYPT_INTEGER_BLOB {
+        cbData: cipher.len() as u32,
+        pbData: cipher.as_ptr() as *mut u8,
+    };
+    let mut output = CRYPT_INTEGER_BLOB::default();
+
+    unsafe {
+        CryptUnprotectData(
+            &input,
+            None,
+            None,
+            None,
+            None,
+            CRYPTPROTECT_UI_FORBIDDEN,
+            &mut output,
+        )
+        .map_err(|e| format!("failed to decrypt session: {}", e))?;
+
+        let decrypted = std::slice::from_raw_parts(output.pbData, output.cbData as usize).to_vec();
+        let _ = LocalFree(Some(HLOCAL(output.pbData as _)));
+        Ok(decrypted)
+    }
+}
+
+fn encode_saved_session(data: &SavedSession) -> Result<Vec<u8>, String> {
+    let serialized = serde_json::to_vec(data).map_err(|e| e.to_string())?;
+
+    #[cfg(windows)]
+    {
+        return encrypt_session_bytes(&serialized);
+    }
+
+    #[cfg(not(windows))]
+    {
+        Ok(serialized)
+    }
+}
+
+fn decode_saved_session(bytes: &[u8]) -> Result<SavedSession, String> {
+    #[cfg(windows)]
+    {
+        if let Ok(decrypted) = decrypt_session_bytes(bytes) {
+            if let Ok(data) = serde_json::from_slice::<SavedSession>(&decrypted) {
+                return Ok(data);
+            }
+        }
+    }
+
+    serde_json::from_slice(bytes).map_err(|e| e.to_string())
+}
+
 fn session_path(app: &AppHandle) -> Result<std::path::PathBuf, String> {
     let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     Ok(dir.join(SESSION_FILE))
@@ -189,8 +277,8 @@ pub async fn save_session(app: AppHandle, mr_id: String, unique: String) -> Resu
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
     let data = SavedSession { mr_id, unique };
-    let json = serde_json::to_string(&data).map_err(|e| e.to_string())?;
-    std::fs::write(&path, json).map_err(|e| e.to_string())?;
+    let encoded = encode_saved_session(&data)?;
+    std::fs::write(&path, encoded).map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -200,8 +288,11 @@ pub async fn load_session(app: AppHandle) -> Result<Option<(String, String)>, St
     if !path.exists() {
         return Ok(None);
     }
-    let json = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
-    let data: SavedSession = serde_json::from_str(&json).map_err(|e| e.to_string())?;
+    let bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
+    if bytes.is_empty() {
+        return Ok(None);
+    }
+    let data = decode_saved_session(&bytes)?;
     if data.mr_id.is_empty() || data.unique.is_empty() {
         return Ok(None);
     }

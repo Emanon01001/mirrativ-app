@@ -1,42 +1,69 @@
 mod mirrativ;
 mod mpv_player;
+use mirrativ::client::broadcast::BroadcastManager;
+use mirrativ::client::llstream_relay::LlstreamRelayManager;
 use mirrativ::MirrativClient;
 use mpv_player::MpvPlayerManager;
 use tauri::{Emitter, Manager, WindowEvent};
+
+/// フロントエンドからのログをターミナルに出力する
+#[tauri::command]
+fn frontend_log(level: String, tag: String, message: String) {
+    match level.as_str() {
+        "error" => eprintln!("\x1b[31m[{}]\x1b[0m {}", tag, message),
+        "warn"  => eprintln!("\x1b[33m[{}]\x1b[0m {}", tag, message),
+        _       => println!("\x1b[36m[{}]\x1b[0m {}", tag, message),
+    }
+}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     mpv_player::init_main_thread_id();
     let client = MirrativClient::new();
     let mpv_player = MpvPlayerManager::new();
+    let broadcast = BroadcastManager::new();
+    let llstream_relay = LlstreamRelayManager::new();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .manage(client)
         .manage(mpv_player)
-        .on_window_event(|window, event| {
-            match window.label() {
-                "player" => {
-                    if let WindowEvent::CloseRequested { .. } = event {
-                        let app = window.app_handle().clone();
-                        tauri::async_runtime::spawn(async move {
-                            let manager = app.state::<MpvPlayerManager>();
-                            let _ = mpv_player::stop_mpv(
-                                app.clone(),
-                                manager,
-                                Some("window-close".to_string()),
-                            )
-                            .await;
-                        });
-                    }
+        .manage(broadcast)
+        .manage(llstream_relay)
+        .setup(|app| {
+            let app_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                let client = app_handle.state::<MirrativClient>();
+                if client.has_session().await {
+                    return;
                 }
-                "twitter-auth" => {
-                    if let WindowEvent::Destroyed = event {
-                        let _ = window.app_handle().emit("auth://login-cancelled", ());
-                    }
+                if let Err(err) = client.bootstrap_guest_session().await {
+                    eprintln!("guest bootstrap failed: {}", err);
                 }
-                _ => {}
+            });
+            Ok(())
+        })
+        .on_window_event(|window, event| match window.label() {
+            "player" => {
+                if let WindowEvent::CloseRequested { .. } = event {
+                    let app = window.app_handle().clone();
+                    tauri::async_runtime::spawn(async move {
+                        let manager = app.state::<MpvPlayerManager>();
+                        let _ = mpv_player::stop_mpv(
+                            app.clone(),
+                            manager,
+                            Some("window-close".to_string()),
+                        )
+                        .await;
+                    });
+                }
             }
+            "twitter-auth" => {
+                if let WindowEvent::Destroyed = event {
+                    let _ = window.app_handle().emit("auth://login-cancelled", ());
+                }
+            }
+            _ => {}
         })
         .invoke_handler(tauri::generate_handler![
             // GET API - ユーザー
@@ -134,6 +161,16 @@ pub fn run() {
             mirrativ::client::auth::delete_session,
             // 複雑な操作
             mirrativ::client::complex::join_live,
+            // Broadcast WS
+            mirrativ::client::broadcast::connect_broadcast,
+            mirrativ::client::broadcast::disconnect_broadcast,
+            mirrativ::client::broadcast::send_broadcast,
+            // LLStream video relay (debug)
+            mirrativ::client::llstream_relay::start_llstream_video_ts_relay,
+            mirrativ::client::llstream_relay::start_llstream_av_ts_relay,
+            mirrativ::client::llstream_relay::start_llstream_video_pipe_relay,
+            mirrativ::client::llstream_relay::stop_llstream_relay,
+            mirrativ::client::llstream_relay::get_llstream_relay_url,
             // MPV Player
             mpv_player::create_player_window,
             mpv_player::start_mpv,
@@ -142,6 +179,8 @@ pub fn run() {
             mpv_player::get_player_info,
             mpv_player::close_player_window,
             mpv_player::position_mpv_window,
+            // フロントエンドログ
+            frontend_log,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -4,7 +4,8 @@
       "WebFetch(domain:crates.io)",
       "Bash(node:*)",
       "Bash(cargo check:*)",
-      "Bash(npx tauri build:*)"
+      "Bash(npx tauri build:*)",
+      "Bash(find:*)"
     ]
   }
 }

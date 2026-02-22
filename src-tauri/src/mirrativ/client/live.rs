@@ -246,10 +246,6 @@ pub async fn preview_end(
     form.insert("live_id".to_string(), live_id);
 
     state
-        .post_json(
-            "https://www.mirrativ.com/api/live/preview_end",
-            form,
-            None,
-        )
+        .post_json("https://www.mirrativ.com/api/live/preview_end", form, None)
         .await
 }

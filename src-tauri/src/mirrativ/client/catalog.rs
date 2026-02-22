@@ -31,7 +31,10 @@ pub async fn get_catalog_tabs(state: tauri::State<'_, MirrativClient>) -> Result
         return res;
     }
     state
-        .fetch_json("https://www.mirrativ.com/api/catalog/tabs", Some("home.select"))
+        .fetch_json(
+            "https://www.mirrativ.com/api/catalog/tabs",
+            Some("home.select"),
+        )
         .await
 }
 
@@ -79,10 +82,7 @@ pub async fn get_catalog_follow(
     cursor: Option<String>,
 ) -> Result<Value, String> {
     let url = if let Some(cur) = cursor {
-        format!(
-            "https://www.mirrativ.com/api/catalog/follow?cursor={}",
-            cur
-        )
+        format!("https://www.mirrativ.com/api/catalog/follow?cursor={}", cur)
     } else {
         "https://www.mirrativ.com/api/catalog/follow".to_string()
     };

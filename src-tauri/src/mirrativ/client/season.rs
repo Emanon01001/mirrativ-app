@@ -4,7 +4,10 @@ use serde_json::Value;
 #[tauri::command]
 pub async fn get_season_rating(state: tauri::State<'_, MirrativClient>) -> Result<Value, String> {
     state
-        .fetch_json("https://www.mirrativ.com/api/season_rating/status", Some("home.select"))
+        .fetch_json(
+            "https://www.mirrativ.com/api/season_rating/status",
+            Some("home.select"),
+        )
         .await
 }
 

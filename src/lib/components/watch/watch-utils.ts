@@ -1,3 +1,9 @@
+// ─────────────────────────────────────────────────────────────────────────────
+// プリミティブ値ピックヘルパー
+// 複数の候補値から最初の有効な値を返す汎用ユーティリティ
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** 複数の候補から最初の有効な文字列を返す（見つからない場合は空文字） */
 export const pickFirstString = (...values: Array<unknown>) => {
   for (const value of values) {
     if (typeof value === "string" && value.trim()) return value;
@@ -5,6 +11,7 @@ export const pickFirstString = (...values: Array<unknown>) => {
   return "";
 };
 
+/** 複数の候補から最初の有効な数値を返す（見つからない場合は 0） */
 export const pickFirstNumber = (...values: Array<unknown>) => {
   for (const value of values) {
     if (typeof value === "number" && Number.isFinite(value)) return value;
@@ -16,6 +23,26 @@ export const pickFirstNumber = (...values: Array<unknown>) => {
   return 0;
 };
 
+/**
+ * 複数の候補から最初の有効な数値を返す（見つからない場合は null）
+ * 値がないことを明示的に区別したい場合（例: 視聴者数が未取得）に使用する
+ */
+export const pickNullableNumber = (...values: Array<unknown>): number | null => {
+  for (const value of values) {
+    if (typeof value === "number" && Number.isFinite(value)) return value;
+    if (typeof value === "string" && value.trim()) {
+      const parsed = Number(value);
+      if (Number.isFinite(parsed)) return parsed;
+    }
+  }
+  return null;
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// フォーマットヘルパー
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Unix タイムスタンプ（秒）をロケール文字列にフォーマットする */
 export const formatUnix = (value: unknown) => {
   const seconds = pickFirstNumber(value);
   if (!seconds) return "-";
@@ -24,12 +51,21 @@ export const formatUnix = (value: unknown) => {
   return date.toLocaleString();
 };
 
+/** 複数の候補から最初の有効な数値を取得し、カンマ区切りの文字列にフォーマットする */
 export const formatNumber = (...values: Array<unknown>) => {
   const num = pickFirstNumber(...values);
   if (!num) return "0";
   return num.toLocaleString();
 };
 
+// ─────────────────────────────────────────────────────────────────────────────
+// デバッグ表示用フラット化
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * 任意のオブジェクトをデバッグ表示用にフラットなキー・値ペアの配列へ変換する。
+ * ネストされたオブジェクトはドット区切りのパスで表現される。
+ */
 export const flattenForDisplay = (
   value: unknown,
   options: { maxEntries?: number; maxDepth?: number; maxArray?: number } = {}
@@ -106,11 +142,21 @@ export const flattenForDisplay = (
   return rows;
 };
 
+// ─────────────────────────────────────────────────────────────────────────────
+// APIレスポンス正規化
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** API レスポンスからコメント配列を抽出する（複数フィールド名に対応） */
 export const extractComments = (res: any) => {
   const list = res?.comments ?? res?.live_comments ?? res?.data ?? [];
   return Array.isArray(list) ? list : [];
 };
 
+/**
+ * API レスポンスからランキング配列を抽出する。
+ * ギフトランキングはネスト構造が API バージョンによって異なるため、
+ * 複数のパスを試みる。
+ */
 export const extractRanking = (res: any) => {
   const candidates = [
     res?.ranking,
@@ -137,7 +183,16 @@ export const extractRanking = (res: any) => {
   return [];
 };
 
+// ─────────────────────────────────────────────────────────────────────────────
+// ストリーム URL 解決
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * ストリームステータスオブジェクトから HLS URL を取得する。
+ * APIバージョンによってフィールド名が異なるため、複数のパスを試みる。
+ */
 export const getStreamUrl = (status: any) => {
+  // 直接フィールドを優先
   const direct =
     status?.streaming_url_hls ??
     status?.streaming_url ??
@@ -146,6 +201,7 @@ export const getStreamUrl = (status: any) => {
     "";
   if (direct) return direct;
 
+  // リスト形式の場合、最初の有効な URL を返す
   const list = status?.streaming_url_list ?? status?.streaming_urls ?? status?.url_list ?? [];
   if (Array.isArray(list)) {
     for (const item of list) {
@@ -158,6 +214,72 @@ export const getStreamUrl = (status: any) => {
   return "";
 };
 
+/**
+ * LLStream の edge/stream_key から WS URL を組み立てる。
+ * edge が ws:// / wss:// の場合はそのまま利用し、そうでなければ ws://<edge>:1883 を使う。
+ */
+export const buildLlstreamWsUrl = (edge: string, streamKey: string, suffix: string) => {
+  if (!edge || !streamKey) return "";
+  if (edge.startsWith("ws://") || edge.startsWith("wss://")) {
+    const normalized = edge.replace(/\/+$/, "");
+    return `${normalized}/ws/${streamKey}/${suffix}`;
+  }
+  const host = edge.includes(":") ? edge : `${edge}:1883`;
+  return `ws://${host}/ws/${streamKey}/${suffix}`;
+};
+
+/** streamStatus から LLStream video WS URL を解決する */
+export const getLlstreamVideoWsUrl = (status: any) => {
+  const direct = pickFirstString(
+    status?.streaming_url_llstream_video,
+    status?.live?.streaming_url_llstream_video,
+    status?.data?.streaming_url_llstream_video
+  );
+  if (direct) return direct;
+
+  const streamKey = pickFirstString(
+    status?.streaming_key,
+    status?.live?.streaming_key,
+    status?.data?.streaming_key
+  );
+  const edge = pickFirstString(
+    status?.streaming_url_edge,
+    status?.live?.streaming_url_edge,
+    status?.data?.streaming_url_edge
+  );
+  return buildLlstreamWsUrl(edge, streamKey, "video/avc");
+};
+
+/** streamStatus から LLStream audio WS URL を解決する */
+export const getLlstreamAudioWsUrl = (status: any) => {
+  const direct = pickFirstString(
+    status?.streaming_url_llstream_audio,
+    status?.live?.streaming_url_llstream_audio,
+    status?.data?.streaming_url_llstream_audio
+  );
+  if (direct) return direct;
+
+  const streamKey = pickFirstString(
+    status?.streaming_key,
+    status?.live?.streaming_key,
+    status?.data?.streaming_key
+  );
+  const edge = pickFirstString(
+    status?.streaming_url_edge,
+    status?.live?.streaming_url_edge,
+    status?.data?.streaming_url_edge
+  );
+  return buildLlstreamWsUrl(edge, streamKey, "audio/aac");
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ライブ情報ビルダー
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * liveInfo と polling の両方を統合してUI表示用のビューモデルを構築する。
+ * polling の値はリアルタイム更新されるため、liveInfo より優先される。
+ */
 export const buildLiveInfoView = (liveInfo: any, polling: any) => {
   if (!liveInfo && !polling) return null;
   const src = liveInfo?.live ?? liveInfo ?? {};
@@ -170,13 +292,17 @@ export const buildLiveInfoView = (liveInfo: any, polling: any) => {
     pollSrc?.owner?.name,
     pollSrc?.user?.name
   );
-  const viewers = pickFirstNumber(
-    src?.total_viewer_num,
-    src?.online_user_num,
+  // pollingの値を優先（リアルタイム更新されるため）
+  const totalViewers = pickFirstNumber(
     pollSrc?.total_viewer_num,
-    pollSrc?.online_user_num
+    src?.total_viewer_num
   );
-  const commentNum = pickFirstNumber(src?.comment_num, pollSrc?.comment_num);
+  const onlineViewers = pickFirstNumber(
+    pollSrc?.online_user_num,
+    src?.online_user_num
+  );
+  const viewers = onlineViewers || totalViewers;
+  const commentNum = pickFirstNumber(pollSrc?.comment_num, src?.comment_num);
   const startedAt = pickFirstNumber(src?.started_at, pollSrc?.started_at);
   const appTitle = pickFirstString(
     src?.app_title,
@@ -185,33 +311,62 @@ export const buildLiveInfoView = (liveInfo: any, polling: any) => {
     pollSrc?.app_short_title
   );
   const collabVacancy =
-    typeof src?.collab_has_vacancy === "number"
-      ? src.collab_has_vacancy
-      : typeof pollSrc?.collab_has_vacancy === "number"
-        ? pollSrc.collab_has_vacancy
+    typeof pollSrc?.collab_has_vacancy === "number"
+      ? pollSrc.collab_has_vacancy
+      : typeof src?.collab_has_vacancy === "number"
+        ? src.collab_has_vacancy
         : null;
 
   const isLiveValue =
-    typeof src?.is_live === "boolean"
-      ? src.is_live
-      : typeof pollSrc?.is_live === "boolean"
-        ? pollSrc.is_live
+    typeof pollSrc?.is_live === "boolean"
+      ? pollSrc.is_live
+      : typeof src?.is_live === "boolean"
+        ? src.is_live
         : typeof liveInfo?.is_live === "boolean"
           ? liveInfo.is_live
           : src?.ended_at === 0;
 
+  const starCount = pickFirstNumber(pollSrc?.star_num, src?.star_num);
+  const giftCount = pickFirstNumber(pollSrc?.gift_num, src?.gift_num);
+  const liveId = pickFirstString(src?.live_id, pollSrc?.live_id);
+  const ownerUserId = pickFirstString(
+    src?.owner?.user_id,
+    src?.user?.user_id,
+    pollSrc?.owner?.user_id,
+    pollSrc?.user?.user_id
+  );
+  const isFollowing =
+    typeof src?.owner?.is_following === "number"
+      ? src.owner.is_following
+      : typeof src?.is_following === "number"
+        ? src.is_following
+        : null;
+
   return {
     title: title || "タイトルなし",
     owner: ownerName || "不明",
+    ownerUserId,
+    isFollowing,
     viewers,
+    totalViewers,
+    onlineViewers,
     commentNum,
     startedAt,
     appTitle: appTitle || "不明",
     collabVacancy,
-    status: isLiveValue ? "配信中" : "終了"
+    status: isLiveValue ? "配信中" : "終了",
+    isLive: isLiveValue,
+    starCount,
+    giftCount,
+    liveId,
   };
 };
 
+// ─────────────────────────────────────────────────────────────────────────────
+// ギフトランキング URL / ユーザー ID 解決
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** polling または liveInfo からギフトランキング API の URL を取得する */
 export const getGiftRankingUrl = (polling: any, liveInfo: any) =>
   pickFirstString(
     polling?.gift_ranking_url,
@@ -223,6 +378,10 @@ export const getGiftRankingUrl = (polling: any, liveInfo: any) =>
     liveInfo?.live?.gift_ranking_url
   );
 
+/**
+ * ランキング取得に必要な obfuscated_user_id を取得する。
+ * URL クエリパラメータ、polling、liveInfo の順に検索する。
+ */
 export const getObfuscatedUserId = (polling: any, liveInfo: any, giftRankingUrl: string) => {
   let fromUrl = "";
   if (giftRankingUrl) {
@@ -245,6 +404,14 @@ export const getObfuscatedUserId = (polling: any, liveInfo: any, giftRankingUrl:
   );
 };
 
+// ─────────────────────────────────────────────────────────────────────────────
+// ランキングリストのマージ・正規化
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * ベースランキングと追加ランキングをマージする。
+ * rank / user_id をキーに重複排除し、追加情報で補完する。
+ */
 export const mergeRankingLists = (base: any[], extra: any[]) => {
   if (!base.length) return extra;
   if (!extra.length) return base;
@@ -279,6 +446,11 @@ export const mergeRankingLists = (base: any[], extra: any[]) => {
   return merged;
 };
 
+/**
+ * ランキングアイテムを API 構造の差異を吸収してUI表示用に正規化する。
+ * ユーザー情報・ギフト情報のネスト位置がバージョンによって異なるため、
+ * 複数のパスから取得する。
+ */
 export const resolveRankingItem = (item: any) => {
   const user = item?.user ?? item?.owner ?? item?.sender ?? item?.viewer ?? item?.account ?? {};
   const gift =
@@ -320,6 +492,7 @@ export const resolveRankingItem = (item: any) => {
   return { rank, userName, userId, points, giftName, giftImage, userImage };
 };
 
+/** ギフトランキングのベース・追加リストをマージしてUI表示用に変換する */
 export const buildGiftRankingView = (giftRanking: any, giftRankingExtra: any) => {
   const base = Array.isArray(giftRanking) ? giftRanking : [];
   const extra = Array.isArray(giftRankingExtra) ? giftRankingExtra : [];

@@ -36,9 +36,7 @@ pub async fn get_gift_ranking(
 }
 
 #[tauri::command]
-pub async fn get_emomo_run_gifts(
-    state: tauri::State<'_, MirrativClient>,
-) -> Result<Value, String> {
+pub async fn get_emomo_run_gifts(state: tauri::State<'_, MirrativClient>) -> Result<Value, String> {
     state
         .fetch_json("https://www.mirrativ.com/api/gift/emomo_run_gifts", None)
         .await
@@ -78,8 +76,20 @@ pub async fn get_gift_ranking_by_url(
     if trimmed.is_empty() {
         return Err("gift_ranking_url is empty".to_string());
     }
-    if !(trimmed.starts_with("https://") || trimmed.starts_with("http://")) {
+
+    let parsed = url::Url::parse(trimmed).map_err(|_| "gift_ranking_url is invalid".to_string())?;
+    if parsed.scheme() != "https" && parsed.scheme() != "http" {
         return Err("gift_ranking_url must be http(s)".to_string());
     }
+
+    let host = parsed.host_str().unwrap_or_default().to_ascii_lowercase();
+    if host != "mirrativ.com" && !host.ends_with(".mirrativ.com") {
+        return Err("gift_ranking_url must be a mirrativ.com domain".to_string());
+    }
+
+    if !parsed.path().starts_with("/api/gift/ranking") {
+        return Err("gift_ranking_url path is not allowed".to_string());
+    }
+
     state.fetch_json(trimmed, Some("live_view")).await
 }

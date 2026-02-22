@@ -5,14 +5,22 @@ use std::collections::HashMap;
 #[tauri::command]
 pub async fn get_mission_status(state: tauri::State<'_, MirrativClient>) -> Result<Value, String> {
     state
-        .fetch_json("https://www.mirrativ.com/api/mission/status", Some("home.select"))
+        .fetch_json(
+            "https://www.mirrativ.com/api/mission/status",
+            Some("home.select"),
+        )
         .await
 }
 
 #[tauri::command]
-pub async fn get_mission_tutorial(state: tauri::State<'_, MirrativClient>) -> Result<Value, String> {
+pub async fn get_mission_tutorial(
+    state: tauri::State<'_, MirrativClient>,
+) -> Result<Value, String> {
     state
-        .fetch_json("https://www.mirrativ.com/api/mission/tutorial", Some("mission.tutorial"))
+        .fetch_json(
+            "https://www.mirrativ.com/api/mission/tutorial",
+            Some("mission.tutorial"),
+        )
         .await
 }
 
@@ -30,7 +38,10 @@ pub async fn get_current_login_bonus(
     state: tauri::State<'_, MirrativClient>,
 ) -> Result<Value, String> {
     state
-        .fetch_json("https://www.mirrativ.com/api/mission/current_login_bonus", None)
+        .fetch_json(
+            "https://www.mirrativ.com/api/mission/current_login_bonus",
+            None,
+        )
         .await
 }
 

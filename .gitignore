@@ -32,3 +32,12 @@ vite.config.ts.timestamp-*
 
 # mpv
 *.dll
+
+# Codex / AI tool build artifacts
+target-codex*/
+target-checko*/
+.codex-target/
+src-tauri/.codex-target/
+
+# Mirrativ endpoint data (may contain sensitive info)
+mirrativ_endpoint/

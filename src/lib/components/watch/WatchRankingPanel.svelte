@@ -86,27 +86,41 @@
 <style>
   h3 {
     margin: 0;
-    font-size: 1rem;
+    font-size: 0.98rem;
+    letter-spacing: 0.02em;
   }
 
   .ranking-toggle {
     display: flex;
-    gap: 8px;
+    gap: 6px;
+    padding: 4px;
+    border-radius: 999px;
+    background: rgba(16, 27, 30, 0.06);
+    border: 1px solid rgba(16, 27, 30, 0.1);
   }
 
   .ranking-toggle button {
-    background: rgba(16, 27, 30, 0.08);
+    flex: 1 1 0;
+    background: transparent;
     color: var(--ink-700);
+    border: 1px solid transparent;
+    font-size: 0.76rem;
+    padding: 6px 10px;
   }
 
   .ranking-toggle button.active {
     background: var(--accent-500);
+    border-color: var(--accent-500);
     color: #fff;
+    box-shadow: 0 8px 14px rgba(15, 42, 39, 0.15);
   }
 
   .ranking-list {
     display: grid;
-    gap: 8px;
+    gap: 9px;
+    max-height: 330px;
+    overflow: auto;
+    padding-right: 2px;
   }
 
   .ranking-item {
@@ -117,6 +131,10 @@
     grid-auto-rows: auto;
     align-items: center;
     font-size: 0.85rem;
+    border-radius: 12px;
+    padding: 8px 10px;
+    background: rgba(16, 27, 30, 0.04);
+    border: 1px solid rgba(16, 27, 30, 0.08);
   }
 
   .rank {
@@ -190,6 +208,7 @@
 
   .points {
     font-weight: 700;
+    color: var(--ink-800);
     grid-column: 3;
     grid-row: 1 / span 2;
     justify-self: end;
@@ -207,18 +226,24 @@
   }
 
   button {
-    border: none;
+    border: 1px solid transparent;
     border-radius: 999px;
     padding: 8px 16px;
-    font-weight: 600;
+    font-weight: 700;
     cursor: pointer;
     background: var(--accent-500);
     color: #fff;
+    transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
+  }
+
+  button:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 8px 14px rgba(15, 42, 39, 0.14);
   }
 
   .ghost {
-    background: transparent;
-    border: 1px solid rgba(16, 27, 30, 0.2);
+    background: rgba(255, 255, 255, 0.82);
+    border-color: rgba(16, 27, 30, 0.22);
     color: var(--ink-700);
   }
 

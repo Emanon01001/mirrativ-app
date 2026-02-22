@@ -7,11 +7,19 @@ pub async fn follow(
     state: tauri::State<'_, MirrativClient>,
     user_id: String,
 ) -> Result<Value, String> {
+    if !state.is_authed().await {
+        return Err("フォローはログイン済みユーザーのみ実行できます".to_string());
+    }
+
     let mut form = HashMap::new();
     form.insert("user_id".to_string(), user_id);
 
     state
-        .post_json("https://www.mirrativ.com/api/graph/follow", form, Some("live_view"))
+        .post_json(
+            "https://www.mirrativ.com/api/graph/follow",
+            form,
+            Some("live_view"),
+        )
         .await
 }
 
@@ -35,7 +43,10 @@ pub async fn unfollow(
 #[tauri::command]
 pub async fn get_urge_users(state: tauri::State<'_, MirrativClient>) -> Result<Value, String> {
     state
-        .fetch_json("https://www.mirrativ.com/api/graph/urge_users", Some("home.follow"))
+        .fetch_json(
+            "https://www.mirrativ.com/api/graph/urge_users",
+            Some("home.follow"),
+        )
         .await
 }
 

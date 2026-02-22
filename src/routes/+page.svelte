@@ -12,10 +12,18 @@
   import Debugpage from "$lib/components/debugpage.svelte";
 
   type Page = "home" | "search" | "follow" | "watch" | "profile" | "settings" | "debugpage";
+  type SessionTuple = [string, string];
+  type FinalizeAuthOptions = {
+    assignFields?: boolean;
+    persist?: boolean;
+    shouldRemember?: boolean;
+  };
+  const NOTICE_POLL_INTERVAL_MS = 60_000;
 
   let page = $state<Page>("home");
   let selectedLiveId = $state("");
   let selectedLive = $state<any>(null);
+  let debugCatalogTabs = $state<any[]>([]);
 
   let mrId = $state("");
   let unique = $state("");
@@ -29,9 +37,9 @@
   let noticeError = $state("");
 
   let noticeTimer: ReturnType<typeof setInterval> | null = null;
-  let autoLoginLoading = $state(false);
   let twitterLoginLoading = $state(false);
   let authUnlisten: (() => void) | null = null;
+  let hasSavedSession = $state(false);
 
   type AuthResult = {
     success: boolean;
@@ -79,8 +87,65 @@
     page = "watch";
   };
 
+  const handleTabsLoaded = (tabs: any[]) => {
+    debugCatalogTabs = tabs;
+  };
+
   const handleNavigate = (next: string) => {
-    page = next as Page;
+    const nextPage = next as Page;
+    if (nextPage === "watch") {
+      selectedLiveId = "";
+      selectedLive = null;
+    }
+    page = nextPage;
+  };
+
+  const normalizeSession = (inputMrId: string, inputUnique: string): SessionTuple => [
+    inputMrId.trim(),
+    inputUnique.trim()
+  ];
+
+  const setSessionFields = ([savedMrId, savedUnique]: SessionTuple) => {
+    mrId = savedMrId;
+    unique = savedUnique;
+  };
+
+  const loadSavedSession = async () => invoke<SessionTuple | null>("load_session");
+
+  const clearNoticeTimer = () => {
+    if (!noticeTimer) return;
+    clearInterval(noticeTimer);
+    noticeTimer = null;
+  };
+
+  const startNoticeTimer = () => {
+    clearNoticeTimer();
+    noticeTimer = setInterval(() => {
+      void refreshNotices();
+    }, NOTICE_POLL_INTERVAL_MS);
+  };
+
+  const persistSession = async (session: SessionTuple, shouldRemember: boolean) => {
+    const [savedMrId, savedUnique] = session;
+    if (shouldRemember) {
+      await invoke("save_session", { mrId: savedMrId, unique: savedUnique });
+      hasSavedSession = true;
+      return;
+    }
+    await invoke("delete_session");
+    hasSavedSession = false;
+  };
+
+  const refreshSavedSessionFlag = async () => {
+    hasSavedSession = (await loadSavedSession()) !== null;
+  };
+
+  const ensureGuestSession = async () => {
+    try {
+      await invoke("bootstrap_guest");
+    } catch (e) {
+      console.warn("ゲストセッション初期化失敗", e);
+    }
   };
 
   const refreshUser = async () => {
@@ -102,27 +167,47 @@
     }
   };
 
+  const finalizeAuth = async (
+    session: SessionTuple,
+    {
+      assignFields = true,
+      persist = false,
+      shouldRemember = remember
+    }: FinalizeAuthOptions = {}
+  ) => {
+    const [savedMrId, savedUnique] = session;
+    await invoke("login", { mrId: savedMrId, unique: savedUnique });
+    if (assignFields) {
+      setSessionFields(session);
+    }
+    authed = true;
+    loginError = "";
+
+    if (persist) {
+      await persistSession(session, shouldRemember);
+    }
+
+    await refreshUser();
+    await refreshNotices();
+    startNoticeTimer();
+  };
+
   const handleLogin = async (event: Event) => {
     event.preventDefault();
     loginError = "";
     loginLoading = true;
     try {
-      await invoke("login", { mrId: mrId.trim(), unique: unique.trim() });
-      authed = true;
-
-      if (remember) {
-        await invoke("save_session", { mrId: mrId.trim(), unique: unique.trim() });
-      } else {
-        await invoke("delete_session");
+      const session = normalizeSession(mrId, unique);
+      if (!session[0] || !session[1]) {
+        loginError = "mr_id と unique を入力してください";
+        authed = false;
+        return;
       }
-
-      await refreshUser();
-      await refreshNotices();
-      if (noticeTimer) clearInterval(noticeTimer);
-      noticeTimer = setInterval(refreshNotices, 60_000);
+      await finalizeAuth(session, { persist: true, shouldRemember: remember });
     } catch (e) {
       loginError = e instanceof Error ? e.message : String(e);
       authed = false;
+      clearNoticeTimer();
     } finally {
       loginLoading = false;
     }
@@ -134,37 +219,30 @@
     loginError = "";
   };
 
-  let hasSavedSession = $state(false);
-
   const handleLogout = async () => {
     await invoke("reset_session");
     // ゲストセッションを再取得（配信閲覧用）
     await invoke("bootstrap_guest");
     authed = false;
     noticeCounts = null;
-    if (noticeTimer) clearInterval(noticeTimer);
-    noticeTimer = null;
+    noticeError = "";
+    loginError = "";
+    clearNoticeTimer();
     // mrId, unique, currentUser は保存セッション表示用に残す
-    hasSavedSession = (await invoke<[string, string] | null>("load_session")) !== null;
+    await refreshSavedSessionFlag();
   };
 
   const handleRelogin = async () => {
-    const saved = await invoke<[string, string] | null>("load_session");
+    const saved = await loadSavedSession();
     if (!saved) return;
     loginLoading = true;
     loginError = "";
     try {
-      const [savedMrId, savedUnique] = saved;
-      await invoke("login", { mrId: savedMrId, unique: savedUnique });
-      mrId = savedMrId;
-      unique = savedUnique;
-      authed = true;
-      await refreshUser();
-      await refreshNotices();
-      if (noticeTimer) clearInterval(noticeTimer);
-      noticeTimer = setInterval(refreshNotices, 60_000);
+      await finalizeAuth(saved);
     } catch (e) {
       loginError = e instanceof Error ? e.message : String(e);
+      authed = false;
+      clearNoticeTimer();
     } finally {
       loginLoading = false;
     }
@@ -173,9 +251,12 @@
   const handleDeleteSession = async () => {
     await invoke("delete_session");
     hasSavedSession = false;
-    mrId = "";
-    unique = "";
-    currentUser = null;
+    loginError = "";
+    if (!authed) {
+      mrId = "";
+      unique = "";
+      currentUser = null;
+    }
   };
 
   const handleTwitterLogin = async () => {
@@ -190,45 +271,30 @@
   };
 
   onMount(async () => {
-    // 保存済みセッションがあれば自動ログイン
-    const saved = await invoke<[string, string] | null>("load_session");
+    // 保存済みセッションは保持するが、起動時は常にゲストで開始
+    const saved = await loadSavedSession();
     hasSavedSession = saved !== null;
     if (saved) {
-      autoLoginLoading = true;
-      try {
-        const [savedMrId, savedUnique] = saved;
-        await invoke("login", { mrId: savedMrId, unique: savedUnique });
-        mrId = savedMrId;
-        unique = savedUnique;
-        authed = true;
-        await refreshUser();
-        await refreshNotices();
-        noticeTimer = setInterval(refreshNotices, 60_000);
-      } catch (e) {
-        console.warn("自動ログイン失敗", e);
-        await invoke("delete_session");
-      } finally {
-        autoLoginLoading = false;
-      }
+      setSessionFields(saved);
     }
+    await ensureGuestSession();
 
     // Twitter認証の成功イベントをリスン
     authUnlisten = await listen<AuthResult>("auth://login-success", async (event) => {
       const result = event.payload;
       if (result.success) {
-        mrId = result.mr_id;
-        unique = result.unique;
-        authed = true;
-        twitterLoginLoading = false;
-
-        if (remember) {
-          await invoke("save_session", { mrId: result.mr_id, unique: result.unique });
+        try {
+          await finalizeAuth(normalizeSession(result.mr_id, result.unique), {
+            persist: true,
+            shouldRemember: remember
+          });
+        } catch (e) {
+          loginError = e instanceof Error ? e.message : String(e);
+          authed = false;
+          clearNoticeTimer();
+        } finally {
+          twitterLoginLoading = false;
         }
-
-        await refreshUser();
-        await refreshNotices();
-        if (noticeTimer) clearInterval(noticeTimer);
-        noticeTimer = setInterval(refreshNotices, 60_000);
       } else {
         loginError = result.error ?? "Twitter認証に失敗しました";
         twitterLoginLoading = false;
@@ -249,7 +315,7 @@
   });
 
   onDestroy(() => {
-    if (noticeTimer) clearInterval(noticeTimer);
+    clearNoticeTimer();
     if (authUnlisten) authUnlisten();
   });
 </script>
@@ -290,7 +356,10 @@
 
     <section class="content">
       {#if page === "home"}
-        <HomePage onOpenLive={openLive} />
+        <HomePage
+          onOpenLive={openLive}
+          onTabsLoaded={handleTabsLoaded}
+        />
       {:else if page === "search"}
         <SearchPage onOpenLive={openLive} />
       {:else if page === "follow"}
@@ -301,11 +370,7 @@
         <ProfilePage onOpenLive={openLive} />
       {:else if page === "settings"}
         <div class="settings">
-          {#if autoLoginLoading}
-            <div class="auto-login-loading">
-              <p>自動ログイン中...</p>
-            </div>
-          {:else if authed}
+          {#if authed}
             <div class="session-info">
               <div class="session-header">
                 {#if currentUser?.profile_image_url}
@@ -373,7 +438,12 @@
           {/if}
         </div>
       {:else if page == "debugpage"}
-        <Debugpage />
+        <Debugpage
+          mrId={mrId}
+          unique={unique}
+          user={currentUser}
+          authed={authed}
+          catalogTabs={debugCatalogTabs} />
       {/if}
     </section>
   </main>
@@ -560,19 +630,6 @@
   .error {
     margin: 0;
     color: var(--accent-700);
-    font-weight: 600;
-  }
-
-  .auto-login-loading {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    padding: 32px;
-    color: var(--ink-500);
-  }
-
-  .auto-login-loading p {
-    margin: 0;
     font-weight: 600;
   }
 

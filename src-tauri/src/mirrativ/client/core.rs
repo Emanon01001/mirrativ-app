@@ -1,5 +1,18 @@
+// ─────────────────────────────────────────────────────────────────────────────
+// core.rs
+//
+// Mirrativ API との HTTP 通信を担うコアクライアント。
+//
+// 主な責務:
+//   - reqwest をベースにした HTTP クライアントの構築
+//   - Android アプリを模したカスタムヘッダーの設定
+//   - Cookie ベースのセッション管理（mr_id / f）
+//   - GET/POST/マルチパートリクエストの送信と自動リトライ
+//   - ゲストセッションのブートストラップ
+// ─────────────────────────────────────────────────────────────────────────────
+
 use reqwest::{
-    header::{HeaderMap, HeaderValue, USER_AGENT},
+    header::{HeaderMap, HeaderValue, SET_COOKIE, USER_AGENT},
     multipart::Form,
     Client,
 };
@@ -7,23 +20,41 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tokio::time::sleep;
 use tokio::sync::RwLock;
+use tokio::time::sleep;
 
-/// Mirrativ APIクライアント
+// ─────────────────────────────────────────────────────────────────────────────
+// クライアント構造体
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Mirrativ API クライアント。Tauri の管理状態として登録して使用する。
+///
+/// セッション情報（mr_id / unique）は RwLock で保護しており、
+/// 複数の非同期タスクから安全にアクセスできる。
 pub struct MirrativClient {
     pub(crate) client: Arc<Client>,
+    /// Accept-Language に使用する言語コード
     lang: String,
+    /// セッション Cookie: Mirrativ のユーザー識別子
     mr_id: RwLock<String>,
+    /// セッション Cookie: 端末識別子（f パラメータ）
     unique: RwLock<String>,
+    /// ログイン済みフラグ（mr_id と unique が両方揃っているか）
     authed: RwLock<bool>,
+    /// すべてのリクエストに付加するカスタムヘッダー（起動時に一度生成）
     custom_headers: HeaderMap,
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// クライアント初期化
+// ─────────────────────────────────────────────────────────────────────────────
+
 impl MirrativClient {
+    /// クライアントを初期化する。
+    /// reqwest クライアントを構築し、Android アプリを模したカスタムヘッダーを生成する。
     pub fn new() -> Self {
         let client = Client::builder()
-            .cookie_store(false)
+            .cookie_store(false)  // Cookie の自動管理は無効（手動で制御するため）
             .timeout(Duration::from_secs(10))
             .build()
             .expect("Failed to create HTTP client");
@@ -40,11 +71,12 @@ impl MirrativClient {
         }
     }
 
-    /// カスタムヘッダーを生成（Mirrativ API用）
+    /// Mirrativ Android アプリを模したカスタムヘッダーセットを生成する。
+    /// 端末 ID 系のヘッダーはランダム値を使用し、起動ごとに異なる値になる。
     fn create_custom_headers() -> HeaderMap {
         let mut headers = HeaderMap::new();
 
-        // User-Agent
+        // Android アプリとして識別されるための User-Agent
         headers.insert(
             USER_AGENT,
             HeaderValue::from_static("MR_APP/11.56.0/Android/PGEM10/9"),
@@ -53,39 +85,49 @@ impl MirrativClient {
         headers.insert("Accept-Language", HeaderValue::from_static("ja-JP"));
         headers.insert("Accept-Encoding", HeaderValue::from_static("gzip"));
 
-        // Mirrativ固有ヘッダー
+        // Mirrativ 固有ヘッダー
         headers.insert("HTTP_X_TIMEZONE", HeaderValue::from_static("Asia/Tokyo"));
-        headers.insert("x-idfv", HeaderValue::from_str(&random_hex(16)).unwrap());
-        headers.insert(
-            "x-ad",
-            HeaderValue::from_str(&uuid::Uuid::new_v4().to_string()).unwrap(),
-        );
-        headers.insert("x-hw", HeaderValue::from_static("qcom"));
-        headers.insert("x-widevine-id", HeaderValue::from_static(""));
-        headers.insert("x-network-status", HeaderValue::from_static("2"));
-        headers.insert("x-os-push", HeaderValue::from_static("1"));
-        headers.insert(
-            "x-adjust-adid",
-            HeaderValue::from_str(&random_hex(32)).unwrap(),
-        );
+        // 端末識別子（IDFV に相当、起動ごとにランダム生成）
+        if let Ok(value) = HeaderValue::from_str(&random_hex(16)) {
+            headers.insert("x-idfv", value);
+        }
+        // 広告識別子（起動ごとにランダム生成）
+        if let Ok(value) = HeaderValue::from_str(&uuid::Uuid::new_v4().to_string()) {
+            headers.insert("x-ad", value);
+        }
+        headers.insert("x-hw", HeaderValue::from_static("qcom")); // ハードウェアプラットフォーム
+        headers.insert("x-widevine-id", HeaderValue::from_static("")); // DRM ID（空でOK）
+        headers.insert("x-network-status", HeaderValue::from_static("2")); // Wi-Fi
+        headers.insert("x-os-push", HeaderValue::from_static("1")); // プッシュ通知対応
+        // Adjust SDK の広告追跡ID（起動ごとにランダム生成）
+        if let Ok(value) = HeaderValue::from_str(&random_hex(32)) {
+            headers.insert("x-adjust-adid", value);
+        }
         headers.insert("x-unity-framework", HeaderValue::from_static("6.4.0"));
 
         headers
     }
 
-    /// ヘッダーを取得（カスタムヘッダー + Cookie）
-    pub(crate) async fn get_headers(&self) -> HeaderMap {
+    // ─────────────────────────────────────────────────────────────────────────
+    // ヘッダー構築
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// リクエスト用のヘッダーを構築する。
+    /// カスタムヘッダーにタイムスタンプと（必要な場合）Cookie を追加して返す。
+    pub(crate) async fn get_headers_for_url(&self, target_url: &str) -> HeaderMap {
         let mut headers = self.custom_headers.clone();
 
+        // リクエスト時刻のタイムスタンプ（ミリ秒精度）
         headers.insert(
             "x-client-unixtime",
             HeaderValue::from_str(&current_unixtime())
                 .unwrap_or_else(|_| HeaderValue::from_static("0")),
         );
 
+        // Mirrativ ドメイン向けのリクエストにのみ Cookie を付加する
         let mr_id = self.mr_id.read().await;
         let unique = self.unique.read().await;
-        if !mr_id.is_empty() || !unique.is_empty() {
+        if should_attach_session_cookie(target_url) && (!mr_id.is_empty() || !unique.is_empty()) {
             let mut cookie_parts = vec![format!("lang={}", self.lang)];
             if !mr_id.is_empty() {
                 cookie_parts.push(format!("mr_id={}", *mr_id));
@@ -103,23 +145,31 @@ impl MirrativClient {
         headers
     }
 
-    /// GETリクエストを送信してJSONを取得
+    // ─────────────────────────────────────────────────────────────────────────
+    // HTTP メソッド
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// GET リクエストを送信して JSON レスポンスを取得する。
+    /// 一時的なエラー（429, 5xx, タイムアウト）は最大 3 回まで自動リトライする。
     pub(crate) async fn fetch_json(
         &self,
         url: &str,
         referer: Option<&str>,
     ) -> Result<Value, String> {
-        let mut headers = self.get_headers().await;
+        let mut headers = self.get_headers_for_url(url).await;
         add_referer_header(&mut headers, referer);
 
         for attempt in 0..3 {
-            let resp = self
-                .client
-                .get(url)
-                .headers(headers.clone())
-                .send()
-                .await
-                .map_err(|e| e.to_string())?;
+            let resp = match self.client.get(url).headers(headers.clone()).send().await {
+                Ok(resp) => resp,
+                Err(err) => {
+                    if attempt < 2 && is_retryable_transport_error(&err) {
+                        sleep(retry_delay(attempt)).await;
+                        continue;
+                    }
+                    return Err(err.to_string());
+                }
+            };
 
             let status = resp.status();
             if status.is_success() {
@@ -137,14 +187,15 @@ impl MirrativClient {
         Err("HTTP request failed".to_string())
     }
 
-    /// POSTリクエストを送信してJSONを取得
+    /// フォームエンコードされた POST リクエストを送信して JSON レスポンスを取得する。
+    /// リトライロジックは fetch_json と同じ。
     pub(crate) async fn post_json(
         &self,
         url: &str,
         form: HashMap<String, String>,
         referer: Option<&str>,
     ) -> Result<Value, String> {
-        let mut headers = self.get_headers().await;
+        let mut headers = self.get_headers_for_url(url).await;
         add_referer_header(&mut headers, referer);
         headers.insert(
             "Content-Type",
@@ -153,14 +204,23 @@ impl MirrativClient {
 
         let body = encode_form(&form);
         for attempt in 0..3 {
-            let resp = self
+            let resp = match self
                 .client
                 .post(url)
                 .headers(headers.clone())
                 .body(body.clone())
                 .send()
                 .await
-                .map_err(|e| e.to_string())?;
+            {
+                Ok(resp) => resp,
+                Err(err) => {
+                    if attempt < 2 && is_retryable_transport_error(&err) {
+                        sleep(retry_delay(attempt)).await;
+                        continue;
+                    }
+                    return Err(err.to_string());
+                }
+            };
 
             let status = resp.status();
             if status.is_success() {
@@ -178,23 +238,33 @@ impl MirrativClient {
         Err("HTTP request failed".to_string())
     }
 
+    /// JSON ボディの POST リクエストを送信して JSON レスポンスを取得する。
     pub(crate) async fn post_json_body(
         &self,
         url: &str,
         body: Value,
         referer: Option<&str>,
     ) -> Result<Value, String> {
-        let mut headers = self.get_headers().await;
+        let mut headers = self.get_headers_for_url(url).await;
         add_referer_header(&mut headers, referer);
         for attempt in 0..3 {
-            let resp = self
+            let resp = match self
                 .client
                 .post(url)
                 .headers(headers.clone())
                 .json(&body)
                 .send()
                 .await
-                .map_err(|e| e.to_string())?;
+            {
+                Ok(resp) => resp,
+                Err(err) => {
+                    if attempt < 2 && is_retryable_transport_error(&err) {
+                        sleep(retry_delay(attempt)).await;
+                        continue;
+                    }
+                    return Err(err.to_string());
+                }
+            };
 
             let status = resp.status();
             if status.is_success() {
@@ -212,13 +282,15 @@ impl MirrativClient {
         Err("HTTP request failed".to_string())
     }
 
+    /// マルチパートフォームの POST リクエストを送信して JSON レスポンスを取得する。
+    /// ファイルアップロード（プロフィール画像など）に使用する。リトライなし。
     pub(crate) async fn post_multipart_json(
         &self,
         url: &str,
         form: Form,
         referer: Option<&str>,
     ) -> Result<Value, String> {
-        let mut headers = self.get_headers().await;
+        let mut headers = self.get_headers_for_url(url).await;
         add_referer_header(&mut headers, referer);
         let resp = self
             .client
@@ -236,7 +308,12 @@ impl MirrativClient {
         Err(format!("HTTP {}", status))
     }
 
-    /// ログイン（Cookie設定）
+    // ─────────────────────────────────────────────────────────────────────────
+    // セッション管理
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// セッション Cookie を設定してログイン状態にする。
+    /// mr_id と unique の両方が揃っている場合のみ authed フラグを立てる。
     pub async fn login(&self, mr_id: String, unique: String) {
         let is_authed = !mr_id.is_empty() && !unique.is_empty();
         *self.mr_id.write().await = mr_id;
@@ -244,29 +321,28 @@ impl MirrativClient {
         *self.authed.write().await = is_authed;
     }
 
-    /// 認証済みかどうか（ゲストセッションは false）
-    pub(crate) async fn is_authed(&self) -> bool {
-        *self.authed.read().await
-    }
-
-    /// セッションをリセット（authed フラグもクリア）
+    /// セッションをリセットしてゲスト状態に戻す
     pub async fn reset(&self) {
         *self.mr_id.write().await = String::new();
         *self.unique.write().await = String::new();
         *self.authed.write().await = false;
     }
 
+    /// ログイン済みかどうかを返す（mr_id と unique の両方が揃っているか）
+    pub(crate) async fn is_authed(&self) -> bool {
+        *self.authed.read().await
+    }
+
+    /// セッション Cookie が設定されているかどうかを返す
     pub(crate) async fn has_session(&self) -> bool {
         let mr_id = self.mr_id.read().await;
         let unique = self.unique.read().await;
-        !mr_id.is_empty() || !unique.is_empty()
+        !mr_id.is_empty() && !unique.is_empty()
     }
 
-    pub(crate) async fn set_session_if_empty(
-        &self,
-        mr_id: Option<String>,
-        unique: Option<String>,
-    ) {
+    /// セッション Cookie が未設定の場合のみ値をセットする（上書きしない）。
+    /// ゲストセッション取得時に既存セッションを保護するために使用する。
+    pub(crate) async fn set_session_if_empty(&self, mr_id: Option<String>, unique: Option<String>) {
         if let Some(mr) = mr_id {
             let mut current = self.mr_id.write().await;
             if current.is_empty() {
@@ -280,8 +356,60 @@ impl MirrativClient {
             }
         }
     }
+
+    /// ゲストセッションを取得する。
+    ///
+    /// /api/user/me にリクエストを送り、Set-Cookie ヘッダーから
+    /// mr_id と f（unique）を抽出してセッションを初期化する。
+    /// 既にセッションが設定済みの場合は上書きしない。
+    pub(crate) async fn bootstrap_guest_session(&self) -> Result<(), String> {
+        let mut headers = self
+            .get_headers_for_url("https://www.mirrativ.com/api/user/me")
+            .await;
+        headers.insert("x-referer", HeaderValue::from_static("my_page"));
+
+        let resp = self
+            .client
+            .get("https://www.mirrativ.com/api/user/me")
+            .headers(headers)
+            .send()
+            .await
+            .map_err(|e| e.to_string())?;
+
+        let headers = resp.headers().clone();
+        let _ = resp
+            .error_for_status()
+            .map_err(|e| e.to_string())?
+            .json::<Value>()
+            .await
+            .map_err(|e| e.to_string())?;
+
+        let mut mr_id_cookie: Option<String> = None;
+        let mut f_cookie: Option<String> = None;
+
+        // Set-Cookie ヘッダーをすべて検査して必要な Cookie を取得
+        for value in headers.get_all(SET_COOKIE).iter() {
+            if let Ok(raw) = value.to_str() {
+                if let Some((name, val)) = parse_set_cookie(raw) {
+                    match name.as_str() {
+                        "mr_id" => mr_id_cookie = Some(val),
+                        "f" => f_cookie = Some(val),
+                        _ => {}
+                    }
+                }
+            }
+        }
+
+        self.set_session_if_empty(mr_id_cookie, f_cookie).await;
+        Ok(())
+    }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// ヘルパー関数
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// x-referer ヘッダーを追加する（None の場合は何もしない）
 fn add_referer_header(headers: &mut HeaderMap, referer: Option<&str>) {
     if let Some(value) = referer {
         headers.insert(
@@ -291,6 +419,7 @@ fn add_referer_header(headers: &mut HeaderMap, referer: Option<&str>) {
     }
 }
 
+/// HashMap をフォームエンコードされた文字列に変換する（key=value&... 形式）
 pub(crate) fn encode_form(form: &HashMap<String, String>) -> String {
     form.iter()
         .map(|(k, v)| format!("{}={}", urlencoding::encode(k), urlencoding::encode(v)))
@@ -298,10 +427,34 @@ pub(crate) fn encode_form(form: &HashMap<String, String>) -> String {
         .join("&")
 }
 
+/// リトライすべき HTTP ステータスコードかどうかを判定する
+/// 対象: 429 (Too Many Requests), 500/502/503/504 (サーバーエラー)
 fn is_retryable_status(status: u16) -> bool {
     matches!(status, 429 | 500 | 502 | 503 | 504)
 }
 
+/// リトライすべきトランスポート層のエラーかどうかを判定する
+fn is_retryable_transport_error(err: &reqwest::Error) -> bool {
+    err.is_timeout() || err.is_connect() || err.is_request()
+}
+
+/// 指定 URL が Mirrativ ドメイン向けかどうかを判定する
+/// （Cookie を付加するかどうかの判断に使用）
+fn should_attach_session_cookie(target_url: &str) -> bool {
+    url::Url::parse(target_url)
+        .ok()
+        .and_then(|parsed| parsed.host_str().map(is_mirrativ_host))
+        .unwrap_or(false)
+}
+
+/// ホスト名が Mirrativ のドメインかどうかを判定する
+fn is_mirrativ_host(host: &str) -> bool {
+    let host = host.trim().to_ascii_lowercase();
+    host == "mirrativ.com" || host.ends_with(".mirrativ.com")
+}
+
+/// リトライ時の待機時間を返す（指数バックオフ）
+/// attempt 0: 200ms, 1: 500ms, 2以上: 900ms
 fn retry_delay(attempt: usize) -> Duration {
     match attempt {
         0 => Duration::from_millis(200),
@@ -310,6 +463,7 @@ fn retry_delay(attempt: usize) -> Duration {
     }
 }
 
+/// 現在時刻を Unix タイムスタンプ（秒.ミリ秒）の文字列で返す
 fn current_unixtime() -> String {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -321,9 +475,22 @@ fn current_unixtime() -> String {
     )
 }
 
-/// ランダムな16進文字列を生成
+/// Set-Cookie ヘッダーの値から "name=value" ペアを抽出する
+/// セミコロン以降の属性（Path, Expires など）は無視する
+fn parse_set_cookie(value: &str) -> Option<(String, String)> {
+    let first = value.split(';').next()?.trim();
+    let mut parts = first.splitn(2, '=');
+    let name = parts.next()?.trim();
+    let val = parts.next()?.trim();
+    if name.is_empty() {
+        return None;
+    }
+    Some((name.to_string(), val.to_string()))
+}
+
+/// 指定長のランダムな 16 進文字列を生成する（端末 ID 等に使用）
 fn random_hex(length: usize) -> String {
-    use rand::Rng;
+    use rand::RngExt;
     let mut rng = rand::rng();
     (0..length)
         .map(|_| format!("{:x}", rng.random::<u8>() % 16))

@@ -1,5 +1,4 @@
 use super::core::MirrativClient;
-use reqwest::header::{HeaderValue, SET_COOKIE};
 use reqwest::multipart::Form;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -33,61 +32,16 @@ pub async fn get_user_tos(state: tauri::State<'_, MirrativClient>) -> Result<Val
 #[tauri::command]
 pub async fn get_my_page_banner(state: tauri::State<'_, MirrativClient>) -> Result<Value, String> {
     state
-        .fetch_json("https://www.mirrativ.com/api/user/my_page_banner", Some("my_page"))
+        .fetch_json(
+            "https://www.mirrativ.com/api/user/my_page_banner",
+            Some("my_page"),
+        )
         .await
 }
 
 #[tauri::command]
 pub async fn bootstrap_guest(state: tauri::State<'_, MirrativClient>) -> Result<(), String> {
-    let mut headers = state.get_headers().await;
-    headers.insert("x-referer", HeaderValue::from_static("my_page"));
-
-    let resp = state
-        .client
-        .get("https://www.mirrativ.com/api/user/me")
-        .headers(headers)
-        .send()
-        .await
-        .map_err(|e| e.to_string())?;
-
-    let headers = resp.headers().clone();
-    let _ = resp
-        .error_for_status()
-        .map_err(|e| e.to_string())?
-        .json::<Value>()
-        .await
-        .map_err(|e| e.to_string())?;
-
-    let mut mr_id_cookie: Option<String> = None;
-    let mut f_cookie: Option<String> = None;
-
-    for value in headers.get_all(SET_COOKIE).iter() {
-        if let Ok(raw) = value.to_str() {
-            if let Some((name, val)) = parse_set_cookie(raw) {
-                match name.as_str() {
-                    "mr_id" => mr_id_cookie = Some(val),
-                    "f" => f_cookie = Some(val),
-                    _ => {}
-                }
-            }
-        }
-    }
-
-    state
-        .set_session_if_empty(mr_id_cookie, f_cookie)
-        .await;
-    Ok(())
-}
-
-fn parse_set_cookie(value: &str) -> Option<(String, String)> {
-    let first = value.split(';').next()?.trim();
-    let mut parts = first.splitn(2, '=');
-    let name = parts.next()?.trim();
-    let val = parts.next()?.trim();
-    if name.is_empty() {
-        return None;
-    }
-    Some((name.to_string(), val.to_string()))
+    state.bootstrap_guest_session().await
 }
 
 #[tauri::command]

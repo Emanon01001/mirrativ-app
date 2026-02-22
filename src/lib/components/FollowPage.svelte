@@ -11,9 +11,35 @@
   let loading = $state(false);
   let error = $state("");
 
+  const getLiveId = (item: any) =>
+    item?.live_id ?? item?.id ?? item?.live?.live_id ?? item?.live?.id ?? "";
+
   const extractLives = (res: any) => {
-    const list = res?.lives ?? res?.live_list ?? res?.data ?? [];
-    return Array.isArray(list) ? list : [];
+    const candidates =
+      res?.list ??
+      res?.lives ??
+      res?.live_list ??
+      res?.data?.list ??
+      res?.data?.lives ??
+      res?.data?.live_list ??
+      res?.data ??
+      [];
+
+    if (!Array.isArray(candidates)) return [];
+
+    const normalized = candidates
+      .map((item) => item?.live ?? item)
+      .filter(Boolean);
+
+    const seen = new Set<string>();
+    const unique: any[] = [];
+    for (const item of normalized) {
+      const id = String(getLiveId(item) ?? "");
+      if (id && seen.has(id)) continue;
+      if (id) seen.add(id);
+      unique.push(item);
+    }
+    return unique;
   };
 
   const loadFollow = async () => {

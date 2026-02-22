@@ -26,12 +26,13 @@
 <style>
   h3 {
     margin: 0;
-    font-size: 1rem;
+    font-size: 0.98rem;
+    letter-spacing: 0.02em;
   }
 
   .detail-list {
     display: grid;
-    gap: 6px;
+    gap: 7px;
     max-height: 320px;
     overflow: auto;
     padding-right: 4px;
@@ -43,6 +44,10 @@
     gap: 8px;
     font-size: 0.78rem;
     align-items: start;
+    border-radius: 10px;
+    padding: 6px 8px;
+    background: rgba(16, 27, 30, 0.04);
+    border: 1px solid rgba(16, 27, 30, 0.08);
   }
 
   .detail-key {
@@ -59,14 +64,16 @@
   }
 
   .raw-json {
-    margin-top: 6px;
+    margin-top: 4px;
     max-width: 100%;
     min-width: 0;
+    padding-top: 6px;
+    border-top: 1px solid rgba(16, 27, 30, 0.09);
   }
 
   .raw-json summary {
     cursor: pointer;
-    font-size: 0.78rem;
+    font-size: 0.76rem;
     color: var(--ink-600);
   }
 
@@ -81,8 +88,8 @@
   pre {
     margin: 0;
     font-size: 0.75rem;
-    background: rgba(15, 42, 39, 0.06);
-    padding: 8px;
+    background: rgba(15, 42, 39, 0.08);
+    padding: 10px;
     border-radius: 12px;
     overflow: auto;
     max-width: 100%;
