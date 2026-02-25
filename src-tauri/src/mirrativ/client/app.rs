@@ -55,3 +55,13 @@ pub async fn get_app_appeal_banners(
         .fetch_json("https://www.mirrativ.com/api/app/appeal_banners", None)
         .await
 }
+
+#[tauri::command]
+pub async fn get_app_search(
+    state: tauri::State<'_, MirrativClient>,
+    query: String,
+) -> Result<Value, String> {
+    let q = urlencoding::encode(&query);
+    let url = format!("https://www.mirrativ.com/api/app/search?q={}", q);
+    state.fetch_json(&url, Some("broadcast")).await
+}

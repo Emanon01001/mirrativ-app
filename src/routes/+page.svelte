@@ -10,8 +10,9 @@
   import ProfilePage from "$lib/components/ProfilePage.svelte";
   import WatchPage from "$lib/components/WatchPage.svelte";
   import Debugpage from "$lib/components/debugpage.svelte";
+  import Streampage from "$lib/components/Streampage.svelte";
 
-  type Page = "home" | "search" | "follow" | "watch" | "profile" | "settings" | "debugpage";
+  type Page = "home" | "search" | "follow" | "watch" | "stream" |"profile" | "settings" | "debugpage";
   type SessionTuple = [string, string];
   type FinalizeAuthOptions = {
     assignFields?: boolean;
@@ -59,6 +60,8 @@
           return "フォロー";
         case "watch":
           return "視聴";
+        case "stream":
+          return "配信";
         case "profile":
           return "プロフィール";
         case "settings":
@@ -364,8 +367,10 @@
         <SearchPage onOpenLive={openLive} />
       {:else if page === "follow"}
         <FollowPage onOpenLive={openLive} />
-        {:else if page === "watch"}
-          <WatchPage initialLiveId={selectedLiveId} initialLive={selectedLive} />
+      {:else if page === "watch"}
+          <WatchPage initialLiveId={selectedLiveId} initialLive={selectedLive} {authed} />
+      {:else if page === "stream"}
+          <Streampage {authed} />
       {:else if page === "profile"}
         <ProfilePage onOpenLive={openLive} />
       {:else if page === "settings"}

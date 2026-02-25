@@ -7,6 +7,11 @@
  */
 import { invoke } from "@tauri-apps/api/core";
 
+const verboseLoggingEnabled =
+  import.meta.env.DEV ||
+  (typeof localStorage !== "undefined" &&
+    localStorage.getItem("MR_VERBOSE_LOG") === "1");
+
 // ─────────────────────────────────────────────────────────────────────────────
 // 型定義
 // ─────────────────────────────────────────────────────────────────────────────
@@ -30,6 +35,10 @@ export type LogTag = "ws" | "hls" | "api" | "join" | "relay";
  * 追加引数を JSON 文字列化してメッセージに結合する。
  */
 const _emit = (level: string, tag: LogTag, msg: string, args: unknown[]) => {
+  if (!verboseLoggingEnabled && level !== "error") {
+    return;
+  }
+
   const extra = args.length
     ? " " +
       args

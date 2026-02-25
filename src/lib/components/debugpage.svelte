@@ -1,6 +1,7 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
-  import { onDestroy } from "svelte";
+  import { listen } from "@tauri-apps/api/event";
+  import { onDestroy, onMount } from "svelte";
 
   type Live = {
     started_at?: number;
@@ -10,13 +11,11 @@
     preview?: { streaming_url_hls?: string };
   };
 
-  type RelayStartResult = {
-    playlist_url: string;
-    mode: string;
-    source: string;
+  type FollowLog = {
+    at: string;
+    message: string;
   };
 
-  // catalogTabs は「何でも来る」前提で unknown に寄せると事故減る
   let { mrId, unique, authed, user, catalogTabs } = $props<{
     mrId: string;
     unique: string;
@@ -26,19 +25,12 @@
   }>();
 
   let now = $state(new Date());
-  let liveIdInput = $state("");
-  let streamFetchLoading = $state(false);
-  let streamStatus = $state<any>(null);
-  let streamFetchError = $state("");
+  let followCursor = $state("");
+  let followLoading = $state(false);
+  let followError = $state("");
+  let followResponse = $state<any>(null);
+  let followLogs = $state<FollowLog[]>([]);
 
-  let relayVideoWsUrl = $state("");
-  let relayAudioWsUrl = $state("");
-  let relayLocalUrl = $state("");
-  let relayLoading = $state(false);
-  let relayError = $state("");
-  let stopRelayOnDestroy = $state(false);
-
-  // props 更新に追従するよう $derived で計算する
   const lives = $derived.by(() => {
     const source = catalogTabs as any;
     const list =
@@ -60,6 +52,25 @@
       : "-"
   );
 
+  const followResponseJson = $derived(
+    followResponse ? JSON.stringify(followResponse, null, 2) : ""
+  );
+
+  const countFollowLives = (source: any): number => {
+    const list =
+      source?.list ??
+      source?.lives ??
+      source?.live_list ??
+      source?.data?.list ??
+      source?.data?.lives ??
+      source?.data?.live_list ??
+      source?.data ??
+      [];
+    return Array.isArray(list) ? list.length : 0;
+  };
+
+  const followLiveCount = $derived.by(() => countFollowLives(followResponse));
+
   const timer = setInterval(() => {
     now = new Date();
   }, 1000);
@@ -71,207 +82,66 @@
       `${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`
   );
 
-  const pickFirstString = (...values: Array<unknown>) => {
-    for (const value of values) {
-      if (typeof value === "string" && value.trim()) return value;
-    }
-    return "";
+  const addFollowLog = (message: string) => {
+    followLogs = [
+      { at: new Date().toLocaleTimeString("ja-JP"), message },
+      ...followLogs
+    ].slice(0, 200);
   };
 
-  const buildLlstreamWsUrl = (edge: string, streamKey: string, suffix: string) => {
-    if (edge.startsWith("ws://") || edge.startsWith("wss://")) {
-      const normalized = edge.replace(/\/+$/, "");
-      return `${normalized}/ws/${streamKey}/${suffix}`;
-    }
-    const host = edge.includes(":") ? edge : `${edge}:1883`;
-    return `ws://${host}/ws/${streamKey}/${suffix}`;
-  };
-
-  const extractLlstreamVideoUrl = (status: any) => {
-    const direct = pickFirstString(
-      status?.streaming_url_llstream_video,
-      status?.live?.streaming_url_llstream_video,
-      status?.data?.streaming_url_llstream_video
-    );
-    if (direct) return direct;
-
-    const streamKey = pickFirstString(
-      status?.streaming_key,
-      status?.live?.streaming_key,
-      status?.data?.streaming_key
-    );
-    const edge = pickFirstString(
-      status?.streaming_url_edge,
-      status?.live?.streaming_url_edge,
-      status?.data?.streaming_url_edge
-    );
-
-    if (!streamKey || !edge) return "";
-    return buildLlstreamWsUrl(edge, streamKey, "video/avc");
-  };
-
-  const extractLlstreamAudioUrl = (status: any) => {
-    const direct = pickFirstString(
-      status?.streaming_url_llstream_audio,
-      status?.live?.streaming_url_llstream_audio,
-      status?.data?.streaming_url_llstream_audio
-    );
-    if (direct) return direct;
-
-    const streamKey = pickFirstString(
-      status?.streaming_key,
-      status?.live?.streaming_key,
-      status?.data?.streaming_key
-    );
-    const edge = pickFirstString(
-      status?.streaming_url_edge,
-      status?.live?.streaming_url_edge,
-      status?.data?.streaming_url_edge
-    );
-
-    if (!streamKey || !edge) return "";
-    return buildLlstreamWsUrl(edge, streamKey, "audio/aac");
-  };
-
-  const extractHlsUrl = (status: any) => {
-    return pickFirstString(
-      status?.streaming_url_hls,
-      status?.streaming_url,
-      status?.hls_url,
-      status?.playlist_url,
-      status?.live?.streaming_url_hls,
-      status?.data?.streaming_url_hls
-    );
-  };
-
-  const streamStatusJson = $derived(
-    streamStatus ? JSON.stringify(streamStatus, null, 2) : ""
-  );
-
-  const resolvedHlsUrl = $derived(extractHlsUrl(streamStatus));
-
-  const handleLiveIdInput = (event: Event) => {
+  const handleFollowCursorInput = (event: Event) => {
     const target = event.currentTarget as HTMLInputElement | null;
-    liveIdInput = target?.value ?? "";
+    followCursor = target?.value ?? "";
   };
 
-  const handleVideoWsInput = (event: Event) => {
-    const target = event.currentTarget as HTMLInputElement | null;
-    relayVideoWsUrl = target?.value ?? "";
+  const clearFollowLogs = () => {
+    followLogs = [];
   };
 
-  const handleAudioWsInput = (event: Event) => {
-    const target = event.currentTarget as HTMLInputElement | null;
-    relayAudioWsUrl = target?.value ?? "";
-  };
+  const fetchCatalogFollow = async () => {
+    followLoading = true;
+    followError = "";
 
-  const useFirstLive = () => {
-    liveIdInput = first?.live_id ?? "";
-  };
-
-  const fetchStreamStatus = async () => {
-    const id = liveIdInput.trim();
-    if (!id) return;
-
-    streamFetchLoading = true;
-    streamFetchError = "";
+    const cursor = followCursor.trim();
+    addFollowLog(`[ui] invoke get_catalog_follow cursor=${cursor || "-"}`);
 
     try {
-      const status = await invoke<any>("get_live_status", { liveId: id });
-      streamStatus = status;
-      const videoWs = extractLlstreamVideoUrl(status);
-      const audioWs = extractLlstreamAudioUrl(status);
-      if (videoWs) {
-        relayVideoWsUrl = videoWs;
-      }
-      if (audioWs) {
-        relayAudioWsUrl = audioWs;
-      }
-    } catch (e) {
-      streamFetchError = e instanceof Error ? e.message : String(e);
-    } finally {
-      streamFetchLoading = false;
-    }
-  };
-
-  const startRelay = async (): Promise<string | null> => {
-    const videoWs = relayVideoWsUrl.trim();
-    if (!videoWs) {
-      relayError = "video ws URL が空です";
-      return null;
-    }
-    const audioWs = relayAudioWsUrl.trim();
-    if (!audioWs) {
-      relayError = "audio ws URL が空です";
-      return null;
-    }
-
-    relayLoading = true;
-    relayError = "";
-
-    try {
-      const result = await invoke<RelayStartResult>("start_llstream_av_ts_relay", {
-        videoWsUrl: videoWs,
-        audioWsUrl: audioWs
+      const payload = await invoke<any>("get_catalog_follow", {
+        cursor: cursor || null
       });
-      relayLocalUrl = result.playlist_url;
-      return result.playlist_url;
+      followResponse = payload;
+      addFollowLog(`[ui] success lives=${countFollowLives(payload)}`);
     } catch (e) {
-      relayError = e instanceof Error ? e.message : String(e);
-      return null;
+      const message = e instanceof Error ? e.message : String(e);
+      followError = message;
+      addFollowLog(`[ui] error ${message}`);
     } finally {
-      relayLoading = false;
+      followLoading = false;
     }
   };
 
-  const stopRelay = async () => {
-    try {
-      await invoke("stop_llstream_relay");
-    } catch {
-      // noop
-    }
-    relayLocalUrl = "";
-  };
+  onMount(() => {
+    let active = true;
+    let unlisten: (() => void) | null = null;
 
-  const playRelayInMpv = async (relayUrl?: string) => {
-    const url = (relayUrl ?? relayLocalUrl).trim();
-    if (!url) {
-      relayError = "relay URL がありません";
-      return;
-    }
+    void listen<string>("catalog_follow://log", (event) => {
+      addFollowLog(`[rust] ${event.payload}`);
+    }).then((dispose) => {
+      if (!active) {
+        dispose();
+        return;
+      }
+      unlisten = dispose;
+    });
 
-    try {
-      await invoke("create_player_window");
-      await invoke("start_mpv", {
-        url,
-        embedded: true,
-        windowLabel: "player"
-      });
-      relayError = "";
-    } catch (e) {
-      relayError = e instanceof Error ? e.message : String(e);
-    }
-  };
-
-  const startRelayAndPlay = async () => {
-    const relayUrl = await startRelay();
-    if (!relayUrl) return;
-    await playRelayInMpv(relayUrl);
-  };
-
-  const stopMpv = async () => {
-    try {
-      await invoke("stop_mpv", { reason: "user" });
-    } catch {
-      // noop
-    }
-  };
+    return () => {
+      active = false;
+      if (unlisten) unlisten();
+    };
+  });
 
   onDestroy(() => {
     clearInterval(timer);
-    if (stopRelayOnDestroy) {
-      void invoke("stop_llstream_relay").catch(() => {});
-    }
   });
 </script>
 
@@ -289,78 +159,47 @@
   <p>started_at (unix): {startedAtUnix ?? "-"}</p>
   <p>started_at (local): {startedAtText}</p>
 
-  <div class="relay-panel">
-    <h3>LLStream Video+Audio -> MPEG-TS -> HTTP -> MPV</h3>
-
+  <div class="follow-panel">
+    <h3>get_catalog_follow debug</h3>
     <div class="row">
       <input
-        placeholder="live_id"
-        value={liveIdInput}
-        oninput={handleLiveIdInput}
+        placeholder="cursor (optional)"
+        value={followCursor}
+        oninput={handleFollowCursorInput}
       />
-      <button type="button" class="ghost" onclick={useFirstLive} disabled={!first?.live_id}>
-        first live_id を使う
+      <button type="button" onclick={fetchCatalogFollow} disabled={followLoading}>
+        {followLoading ? "取得中..." : "get_catalog_follow"}
       </button>
-      <button
-        type="button"
-        onclick={fetchStreamStatus}
-        disabled={streamFetchLoading || !liveIdInput.trim()}
-      >
-        {streamFetchLoading ? "取得中..." : "get_live_status"}
+      <button type="button" class="ghost" onclick={clearFollowLogs} disabled={followLogs.length === 0}>
+        ログクリア
       </button>
     </div>
 
-    <p>resolved hls: {resolvedHlsUrl || "-"}</p>
+    <p>response lives: {followResponse ? followLiveCount : "-"}</p>
 
-    <label>
-      video ws URL
-      <input
-        placeholder="ws://edge-.../ws/[streaming_key]/video/avc"
-        value={relayVideoWsUrl}
-        oninput={handleVideoWsInput}
-      />
-    </label>
-
-    <label>
-      audio ws URL
-      <input
-        placeholder="ws://edge-.../ws/[streaming_key]/audio/aac"
-        value={relayAudioWsUrl}
-        oninput={handleAudioWsInput}
-      />
-    </label>
-
-    <div class="row">
-      <button type="button" onclick={startRelayAndPlay} disabled={relayLoading || !relayVideoWsUrl.trim() || !relayAudioWsUrl.trim()}>
-        {relayLoading ? "起動中..." : "relay+MPV起動"}
-      </button>
-      <button type="button" class="ghost" onclick={startRelay} disabled={relayLoading || !relayVideoWsUrl.trim() || !relayAudioWsUrl.trim()}>
-        {relayLoading ? "relay起動中..." : "relay起動"}
-      </button>
-      <button type="button" class="ghost" onclick={stopRelay}>relay停止</button>
-      <button type="button" class="ghost" onclick={() => void playRelayInMpv()} disabled={!relayLocalUrl}>
-        MPV再生
-      </button>
-      <button type="button" class="ghost" onclick={stopMpv}>MPV停止</button>
-    </div>
-
-    <label class="inline-toggle">
-      <input type="checkbox" bind:checked={stopRelayOnDestroy} />
-      ページ破棄時に relay 停止
-    </label>
-
-    <p>relay URL: {relayLocalUrl || "-"}</p>
-
-    {#if streamFetchError}
-      <p class="error">stream status error: {streamFetchError}</p>
-    {/if}
-    {#if relayError}
-      <p class="error">relay error: {relayError}</p>
+    {#if followError}
+      <p class="error">follow error: {followError}</p>
     {/if}
 
     <details>
-      <summary>get_live_status response</summary>
-      <pre>{streamStatusJson}</pre>
+      <summary>debug logs ({followLogs.length})</summary>
+      <div class="logs">
+        {#if followLogs.length === 0}
+          <p class="log-empty">ログはまだありません</p>
+        {:else}
+          {#each followLogs as entry}
+            <p class="log-line">
+              <span class="log-time">{entry.at}</span>
+              <span>{entry.message}</span>
+            </p>
+          {/each}
+        {/if}
+      </div>
+    </details>
+
+    <details>
+      <summary>get_catalog_follow response</summary>
+      <pre>{followResponseJson}</pre>
     </details>
   </div>
 
@@ -386,7 +225,7 @@
     margin: 0;
   }
 
-  .relay-panel {
+  .follow-panel {
     display: grid;
     gap: 8px;
     margin-top: 8px;
@@ -399,19 +238,6 @@
   .row {
     display: flex;
     flex-wrap: wrap;
-    gap: 8px;
-  }
-
-  label {
-    display: grid;
-    gap: 4px;
-    font-size: 0.84rem;
-    color: var(--ink-600);
-  }
-
-  .inline-toggle {
-    display: inline-flex;
-    align-items: center;
     gap: 8px;
   }
 
@@ -447,6 +273,37 @@
   .error {
     color: var(--accent-700);
     font-weight: 600;
+  }
+
+  .logs {
+    display: grid;
+    gap: 6px;
+    max-height: 240px;
+    overflow: auto;
+    padding: 10px;
+    border-radius: 8px;
+    background: rgba(16, 27, 30, 0.9);
+  }
+
+  .log-line {
+    margin: 0;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    color: #f3f6f7;
+    font-size: 0.76rem;
+    line-height: 1.45;
+  }
+
+  .log-time {
+    color: rgba(243, 246, 247, 0.65);
+    min-width: 78px;
+  }
+
+  .log-empty {
+    margin: 0;
+    color: rgba(243, 246, 247, 0.65);
+    font-size: 0.76rem;
   }
 
   pre {

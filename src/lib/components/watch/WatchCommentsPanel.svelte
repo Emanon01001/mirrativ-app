@@ -7,6 +7,7 @@
     broadcastConnected = false,
     commentCoolingDown = false,
     commentCooldownMs = 500,
+    sendDisabled = false,
     onCommentChange,
     onSend,
     onCooldownMsChange
@@ -18,6 +19,7 @@
     broadcastConnected?: boolean;
     commentCoolingDown?: boolean;
     commentCooldownMs?: number;
+    sendDisabled?: boolean;
     onCommentChange: (value: string) => void;
     onSend: () => void;
     onCooldownMsChange?: (value: number) => void;
@@ -78,13 +80,13 @@
   </div>
   <div class="comment-form">
     <input
-      placeholder="コメントを入力（Enterで送信）"
+      placeholder={sendDisabled ? "コメント送信にはログインが必要です" : "コメントを入力（Enterで送信）"}
       value={commentText}
       oninput={handleInput}
       onkeydown={handleKeyDown}
-      disabled={commentCoolingDown}
+      disabled={commentCoolingDown || sendDisabled}
     />
-    <button onclick={onSend} disabled={commentCoolingDown}>
+    <button onclick={onSend} disabled={commentCoolingDown || sendDisabled}>
       {commentCoolingDown ? "待機中…" : "送信"}
     </button>
   </div>

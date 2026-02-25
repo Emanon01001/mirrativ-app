@@ -38,7 +38,7 @@
   // Props
   // ─────────────────────────────────────────────────────────────────────────
 
-  let { initialLiveId, initialLive } = $props<{ initialLiveId: string; initialLive?: any }>();
+  let { initialLiveId, initialLive, authed = false } = $props<{ initialLiveId: string; initialLive?: any; authed?: boolean }>();
 
   // ─────────────────────────────────────────────────────────────────────────
   // リアクティブ状態
@@ -86,9 +86,9 @@
   let broadcastSubscribed = $state(false);
 
   // 視聴モード: "normal" | "no-join" | "silent"
-  // normal: 全機能（WS・入室ログ・コメント・ランキング・ポーリング）
+  // normal: 全機能（WS・入室ログ・コメント送受信・ランキング・ポーリング）
   // no-join: 入室ログのみスキップ（WS・コメント等は有効）
-  // silent: 最低限の再生のみ（全てスキップ）
+  // silent: 受信のみ（WS接続・コメント受信・ランキング・ポーリングは有効、入室ログ・コメント送信は無効）
   let viewMode = $state<"normal" | "no-join" | "silent">("silent");
   type StreamSourceMode = "auto" | "hls" | "llstream";
   let streamSourceMode = $state<StreamSourceMode>("auto");
@@ -373,6 +373,13 @@
   // 派生状態（$derived）
   // ─────────────────────────────────────────────────────────────────────────
 
+  // ゲスト状態では silent モード固定
+  $effect(() => {
+    if (!authed && viewMode !== "silent") {
+      viewMode = "silent";
+    }
+  });
+
   // サムネクリックからの遷移を検知して自動参加する
   $effect(() => {
     const id = initialLiveId;
@@ -409,17 +416,14 @@
     const wasSilent = prevViewMode === "silent";
     prevViewMode = mode;
 
-    if (wasSilent && mode !== "silent") {
-      // silent → no-join/normal: WS接続・コメント取得を開始
-      log("join", `viewMode changed to "${mode}", starting WS + comments`);
-      joinLive(undefined, { silent: false });
-    } else if (mode === "silent") {
-      // → silent: WS切断・ポーリング停止
-      log("join", `viewMode changed to "silent", disconnecting WS`);
-      stopKeepAlive();
-      void disconnectBroadcast();
+    if (wasSilent && mode === "normal") {
+      // silent → normal: 入室ログを送信（WS は既に接続済み）
+      log("join", `viewMode changed to "normal", sending join log`);
+      void invokeWithTimeout("join_live", { liveId: id }, 12000, "join_live").catch((e: any) =>
+        logWarn("join", "join_live failed on mode switch", e)
+      );
     }
-    // normal ↔ no-join: WS は既に接続中なので何もしない
+    // silent ↔ no-join / normal ↔ no-join: WS は既に接続中なので何もしない
   });
 
   const hlsStreamUrl = $derived(getResolvedHlsUrl(streamStatus));
@@ -841,12 +845,48 @@
       }
 
       const sourceReady = await selectStreamSource(streamStatus, seq, "silent mode");
-      if (!sourceReady) {
+      if (sourceReady) {
+        startKeepAlive();
+      } else {
         error =
           streamSourceMode === "llstream"
             ? "LLStream relay が開始できませんでした"
             : "再生URLが取得できませんでした";
       }
+
+      // WS 接続（受信のみ）: liveInfo → streamStatus → polling の順で broadcast config を探す
+      let broadcastSource: any = liveInfo;
+      let bcConfig = extractBroadcastConfig(broadcastSource);
+      if (!bcConfig) {
+        broadcastSource = streamStatus;
+        bcConfig = extractBroadcastConfig(broadcastSource);
+      }
+      if (!bcConfig) {
+        log("ws", "[silent] broadcast config not in liveInfo/streamStatus, trying polling…");
+        await refreshPolling(targetLiveId, seq);
+        if (connectSeq !== seq) return;
+        if (polling) {
+          broadcastSource = polling;
+          bcConfig = extractBroadcastConfig(broadcastSource);
+        }
+      }
+      if (broadcastSource && bcConfig) {
+        try {
+          await connectBroadcast(broadcastSource);
+          if (connectSeq !== seq) return;
+          log("ws", "[silent] broadcast ready (receive-only)");
+        } catch (wsErr) {
+          logWarn("ws", "[silent] broadcast unavailable", wsErr);
+        }
+      }
+
+      // コメント・ランキング・ポーリング取得（受信のみ）
+      await refreshComments(targetLiveId, seq);
+      if (connectSeq !== seq) return;
+      void refreshRanking(targetLiveId, seq);
+      void refreshPolling(targetLiveId, seq);
+
+      log("join", "silentWatch complete");
     } catch (e) {
       logErr("join", "silentWatch error", e);
       error = e instanceof Error ? e.message : String(e);
@@ -1282,6 +1322,7 @@
         loading={loading}
         viewMode={viewMode}
         streamSourceMode={streamSourceMode}
+        {authed}
         onJoin={(event) => {
           event?.preventDefault();
           const id = liveId.trim();
@@ -1329,6 +1370,7 @@
           broadcastConnected={broadcastConnected}
           commentCoolingDown={commentCoolingDown}
           commentCooldownMs={commentCooldownMs}
+          sendDisabled={viewMode === "silent" || !authed}
           onCommentChange={(value) => (commentText = value)}
           onSend={sendComment}
           onCooldownMsChange={(value) => (commentCooldownMs = value)}

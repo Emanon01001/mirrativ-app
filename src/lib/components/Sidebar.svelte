@@ -14,6 +14,7 @@
     { id: "search", label: "検索", icon: "🔍" },
     { id: "follow", label: "フォロー", icon: "◎" },
     { id: "watch", label: "視聴", icon: "▶" },
+    { id: "stream", label: "配信", icon: "📡" },
     { id: "profile", label: "プロフィール", icon: "▣" },
     { id: "settings", label: "設定", icon: "⚙" },
     { id: "debugpage", label: "テストページ", icon: "🧪" }

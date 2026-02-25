@@ -1,4 +1,5 @@
 use super::core::MirrativClient;
+use reqwest::multipart::Form;
 use serde_json::Value;
 use std::collections::HashMap;
 
@@ -247,5 +248,134 @@ pub async fn preview_end(
 
     state
         .post_json("https://www.mirrativ.com/api/live/preview_end", form, None)
+        .await
+}
+
+#[tauri::command]
+pub async fn live_create(
+    state: tauri::State<'_, MirrativClient>,
+) -> Result<Value, String> {
+    state
+        .post_web_json(
+            "https://www.mirrativ.com/api/live/live_create",
+            serde_json::json!({}),
+            Some("https://www.mirrativ.com/broadcast/history"),
+        )
+        .await
+}
+
+#[tauri::command]
+pub async fn live_edit(
+    state: tauri::State<'_, MirrativClient>,
+    live_id: String,
+    title: Option<String>,
+    description: Option<String>,
+    app_id: Option<String>,
+) -> Result<Value, String> {
+    let referer = format!("https://www.mirrativ.com/broadcast/{}", live_id);
+    let mut form = Form::new().text("live_id", live_id);
+    if let Some(t) = title {
+        form = form.text("title", t);
+    }
+    if let Some(d) = description {
+        form = form.text("description", d);
+    }
+    if let Some(a) = app_id {
+        form = form.text("app_id", a);
+    }
+
+    state
+        .post_web_multipart(
+            "https://www.mirrativ.com/api/live/live_edit",
+            form,
+            Some(&referer),
+        )
+        .await
+}
+
+#[tauri::command]
+pub async fn live_capture_image(
+    state: tauri::State<'_, MirrativClient>,
+    live_id: String,
+    image_data: Vec<u8>,
+    filename: Option<String>,
+) -> Result<Value, String> {
+    let referer = format!("https://www.mirrativ.com/broadcast/{}", live_id);
+    let url = format!(
+        "https://www.mirrativ.com/api/live/live_capture_image?live_id={}",
+        live_id
+    );
+    let fname = filename.unwrap_or_else(|| "thumbnail.jpg".to_string());
+    let part = reqwest::multipart::Part::bytes(image_data)
+        .file_name(fname)
+        .mime_str("image/jpeg")
+        .map_err(|e| e.to_string())?;
+    let form = Form::new().part("live_capture_image", part);
+
+    state
+        .post_web_multipart(&url, form, Some(&referer))
+        .await
+}
+
+#[tauri::command]
+pub async fn live_heartbeat(
+    state: tauri::State<'_, MirrativClient>,
+    live_id: String,
+) -> Result<Value, String> {
+    let referer = format!("https://www.mirrativ.com/broadcast/{}", live_id);
+    let url = format!(
+        "https://www.mirrativ.com/api/live/live_heartbeat?live_id={}",
+        live_id
+    );
+    state
+        .post_web_json(&url, serde_json::json!(null), Some(&referer))
+        .await
+}
+
+#[tauri::command]
+pub async fn live_start(
+    state: tauri::State<'_, MirrativClient>,
+    live_id: String,
+) -> Result<Value, String> {
+    let referer = format!("https://www.mirrativ.com/broadcast/{}", live_id);
+    let url = format!(
+        "https://www.mirrativ.com/api/live/live_start?live_id={}",
+        live_id
+    );
+    state
+        .post_web_json(&url, serde_json::json!(null), Some(&referer))
+        .await
+}
+
+#[tauri::command]
+pub async fn renew_streaming_key(
+    state: tauri::State<'_, MirrativClient>,
+    live_id: String,
+) -> Result<Value, String> {
+    let referer = format!("https://www.mirrativ.com/broadcast/{}", live_id);
+    let mut form = HashMap::new();
+    form.insert("live_id".to_string(), live_id);
+
+    state
+        .post_web_form(
+            "https://www.mirrativ.com/api/live/renew_streaming_key",
+            form,
+            Some(&referer),
+        )
+        .await
+}
+
+#[tauri::command]
+pub async fn live_end(
+    state: tauri::State<'_, MirrativClient>,
+    live_id: String,
+) -> Result<Value, String> {
+    let referer = format!("https://www.mirrativ.com/broadcast/{}", live_id);
+    let url = format!(
+        "https://www.mirrativ.com/api/live/live_end?live_id={}",
+        live_id
+    );
+    state
+        .post_web_json(&url, serde_json::json!(null), Some(&referer))
         .await
 }

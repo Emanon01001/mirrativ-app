@@ -5,7 +5,10 @@
       "Bash(node:*)",
       "Bash(cargo check:*)",
       "Bash(npx tauri build:*)",
-      "Bash(find:*)"
+      "Bash(find:*)",
+      "Bash(npm run check:*)",
+      "Bash(python3 -c \":*)",
+      "Bash(python -c \":*)"
     ]
   }
 }

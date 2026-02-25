@@ -2,11 +2,12 @@
   type ViewMode = "normal" | "no-join" | "silent";
   type StreamSourceMode = "auto" | "hls" | "llstream";
 
-  let { liveId, loading, viewMode, streamSourceMode, onJoin, onLiveIdChange, onViewModeChange, onStreamSourceModeChange } = $props<{
+  let { liveId, loading, viewMode, streamSourceMode, authed, onJoin, onLiveIdChange, onViewModeChange, onStreamSourceModeChange } = $props<{
     liveId: string;
     loading: boolean;
     viewMode: ViewMode;
     streamSourceMode: StreamSourceMode;
+    authed: boolean;
     onJoin: (event?: Event) => void;
     onLiveIdChange: (value: string) => void;
     onViewModeChange: (value: ViewMode) => void;
@@ -31,7 +32,7 @@
   const modeLabels: Record<ViewMode, string> = {
     normal: "通常（全機能）",
     "no-join": "入室ログなし",
-    silent: "サイレント（映像のみ）",
+    silent: "サイレント（受信のみ）",
   };
 
   const streamSourceLabels: Record<StreamSourceMode, string> = {
@@ -53,11 +54,14 @@
     <div class="join-options">
       <label class="mode-label">
         <span>視聴モード</span>
-        <select class="mode-select" value={viewMode} onchange={handleModeChange}>
+        <select class="mode-select" value={viewMode} onchange={handleModeChange} disabled={!authed}>
           {#each Object.entries(modeLabels) as [value, label]}
-            <option {value}>{label}</option>
+            <option {value} disabled={!authed && value !== "silent"}>{label}</option>
           {/each}
         </select>
+        {#if !authed}
+          <span class="mode-hint">ログインで全モード解放</span>
+        {/if}
       </label>
       <label class="mode-label">
         <span>再生ソース</span>
@@ -86,11 +90,14 @@
       <div class="join-options">
         <label class="mode-label">
           <span>視聴モード</span>
-          <select class="mode-select" value={viewMode} onchange={handleModeChange}>
+          <select class="mode-select" value={viewMode} onchange={handleModeChange} disabled={!authed}>
             {#each Object.entries(modeLabels) as [value, label]}
-              <option {value}>{label}</option>
+              <option {value} disabled={!authed && value !== "silent"}>{label}</option>
             {/each}
           </select>
+          {#if !authed}
+            <span class="mode-hint">ログインで全モード解放</span>
+          {/if}
         </label>
         <label class="mode-label">
           <span>再生ソース</span>
@@ -251,6 +258,17 @@
     font-size: 0.78rem;
     color: var(--ink-700);
     cursor: pointer;
+  }
+
+  .mode-select:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  .mode-hint {
+    font-size: 0.68rem;
+    color: var(--accent-500, #c2512e);
+    font-weight: 500;
   }
 
   .reconnect {

@@ -5,26 +5,42 @@ import { sveltekit } from "@sveltejs/kit/vite";
 const host = process.env.TAURI_DEV_HOST || "127.0.0.1";
 
 // https://vitejs.dev/config/
-export default defineConfig(async () => ({
-  plugins: [sveltekit()],
+export default defineConfig(({ mode }) => {
+  const isProd = mode === "production";
 
-  // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
-  //
-  // 1. prevent vite from obscuring rust errors
-  clearScreen: false,
-  // 2. tauri expects a fixed port, fail if that port is not available
-  server: {
-    port: 18080,
-    strictPort: true,
-    host,
-    hmr: {
-      protocol: "ws",
+  return {
+    plugins: [sveltekit()],
+
+    // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
+    //
+    // 1. prevent vite from obscuring rust errors
+    clearScreen: false,
+    // 2. tauri expects a fixed port, fail if that port is not available
+    server: {
+      port: 18080,
+      strictPort: true,
       host,
-      port: 18081,
+      hmr: {
+        protocol: "ws",
+        host,
+        port: 18081,
+      },
+      watch: {
+        // 3. tell vite to ignore watching `src-tauri`
+        ignored: ["**/src-tauri/**"],
+      },
     },
-    watch: {
-      // 3. tell vite to ignore watching `src-tauri`
-      ignored: ["**/src-tauri/**"],
+    build: {
+      sourcemap: false,
+      minify: "esbuild",
+      cssMinify: true,
+      reportCompressedSize: false,
     },
-  },
-}));
+    esbuild: isProd
+      ? {
+          drop: ["console", "debugger"],
+          legalComments: "none",
+        }
+      : undefined,
+  };
+});

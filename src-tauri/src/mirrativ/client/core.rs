@@ -43,6 +43,8 @@ pub struct MirrativClient {
     authed: RwLock<bool>,
     /// すべてのリクエストに付加するカスタムヘッダー（起動時に一度生成）
     custom_headers: HeaderMap,
+    /// Web ブラウザ風リクエスト用の CSRF トークン（<meta name="csrf-token"> から取得）
+    csrf_token: RwLock<String>,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -68,6 +70,7 @@ impl MirrativClient {
             unique: RwLock::new(String::new()),
             authed: RwLock::new(false),
             custom_headers,
+            csrf_token: RwLock::new(String::new()),
         }
     }
 
@@ -238,6 +241,243 @@ impl MirrativClient {
         Err("HTTP request failed".to_string())
     }
 
+    /// ブロードキャストページの HTML から CSRF トークンを取得してキャッシュする。
+    /// `<meta name="csrf-token" content="...">` タグからトークンを抽出する。
+    pub(crate) async fn fetch_csrf_token(&self) -> Result<String, String> {
+        // キャッシュ済みなら返す
+        {
+            let cached = self.csrf_token.read().await;
+            if !cached.is_empty() {
+                return Ok(cached.clone());
+            }
+        }
+
+        // ブロードキャストページを Chrome UA で GET して HTML を取得
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            USER_AGENT,
+            HeaderValue::from_static(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36"
+            ),
+        );
+        headers.insert("Accept", HeaderValue::from_static("text/html,application/xhtml+xml"));
+        headers.insert("Accept-Language", HeaderValue::from_static("ja"));
+
+        // Cookie を付加
+        let mr_id = self.mr_id.read().await;
+        let unique = self.unique.read().await;
+        if !mr_id.is_empty() || !unique.is_empty() {
+            let mut cookie_parts = vec![format!("lang={}", self.lang)];
+            if !mr_id.is_empty() {
+                cookie_parts.push(format!("mr_id={}", *mr_id));
+            }
+            if !unique.is_empty() {
+                cookie_parts.push(format!("f={}", *unique));
+            }
+            let cookie = format!("{};", cookie_parts.join("; "));
+            headers.insert(
+                "Cookie",
+                HeaderValue::from_str(&cookie).unwrap_or_else(|_| HeaderValue::from_static("")),
+            );
+        }
+        drop(mr_id);
+        drop(unique);
+
+        let resp = self
+            .client
+            .get("https://www.mirrativ.com/broadcast/history")
+            .headers(headers)
+            .send()
+            .await
+            .map_err(|e| format!("CSRF fetch failed: {}", e))?;
+
+        let html = resp.text().await.map_err(|e| format!("CSRF read failed: {}", e))?;
+
+        // <meta name="csrf-token" content="TOKEN"> を抽出
+        let token = extract_csrf_token(&html)
+            .ok_or_else(|| "CSRF token not found in HTML".to_string())?;
+
+        *self.csrf_token.write().await = token.clone();
+        Ok(token)
+    }
+
+    /// キャッシュ済みの CSRF トークンをクリアする（セッションリセット時に使用）。
+    pub(crate) async fn clear_csrf_token(&self) {
+        *self.csrf_token.write().await = String::new();
+    }
+
+    /// Web ブラウザ風のヘッダーを構築する（配信関連 API 用）。
+    /// Android アプリヘッダーの代わりに Chrome ベースの User-Agent と CSRF トークンを使用する。
+    pub(crate) async fn get_web_headers_for_url(&self, target_url: &str, referer: Option<&str>) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+
+        headers.insert(
+            USER_AGENT,
+            HeaderValue::from_static(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36"
+            ),
+        );
+        headers.insert("Accept", HeaderValue::from_static("application/json"));
+        headers.insert("Accept-Language", HeaderValue::from_static("ja"));
+        headers.insert("X-Timezone", HeaderValue::from_static("Asia/Tokyo"));
+        headers.insert("Content-Type", HeaderValue::from_static("application/json"));
+        headers.insert("Origin", HeaderValue::from_static("https://www.mirrativ.com"));
+        headers.insert("DNT", HeaderValue::from_static("1"));
+
+        // CSRF トークン
+        if let Ok(token) = self.fetch_csrf_token().await {
+            if let Ok(val) = HeaderValue::from_str(&token) {
+                headers.insert("X-CSRF-Token", val);
+            }
+        }
+
+        // Referer（完全 URL をそのまま使用）
+        if let Some(ref_url) = referer {
+            if let Ok(val) = HeaderValue::from_str(ref_url) {
+                headers.insert("Referer", val);
+            }
+        }
+
+        // Cookie は Android と同じセッション Cookie を使う
+        let mr_id = self.mr_id.read().await;
+        let unique = self.unique.read().await;
+        if should_attach_session_cookie(target_url) && (!mr_id.is_empty() || !unique.is_empty()) {
+            let mut cookie_parts = vec![format!("lang={}", self.lang)];
+            if !mr_id.is_empty() {
+                cookie_parts.push(format!("mr_id={}", *mr_id));
+            }
+            if !unique.is_empty() {
+                cookie_parts.push(format!("f={}", *unique));
+            }
+            let cookie = format!("{};", cookie_parts.join("; "));
+            headers.insert(
+                "Cookie",
+                HeaderValue::from_str(&cookie).unwrap_or_else(|_| HeaderValue::from_static("")),
+            );
+        }
+
+        headers
+    }
+
+    /// Web ブラウザ風ヘッダーで JSON POST リクエストを送信する（配信作成等に使用）。
+    pub(crate) async fn post_web_json(
+        &self,
+        url: &str,
+        body: Value,
+        referer: Option<&str>,
+    ) -> Result<Value, String> {
+        let headers = self.get_web_headers_for_url(url, referer).await;
+        for attempt in 0..3 {
+            let resp = match self
+                .client
+                .post(url)
+                .headers(headers.clone())
+                .json(&body)
+                .send()
+                .await
+            {
+                Ok(resp) => resp,
+                Err(err) => {
+                    if attempt < 2 && is_retryable_transport_error(&err) {
+                        sleep(retry_delay(attempt)).await;
+                        continue;
+                    }
+                    return Err(err.to_string());
+                }
+            };
+
+            let status = resp.status();
+            if status.is_success() {
+                return resp.json::<Value>().await.map_err(|e| e.to_string());
+            }
+
+            if attempt < 2 && is_retryable_status(status.as_u16()) {
+                sleep(retry_delay(attempt)).await;
+                continue;
+            }
+
+            return Err(format!("HTTP {}", status));
+        }
+
+        Err("HTTP request failed".to_string())
+    }
+
+    /// Web ブラウザ風ヘッダーで multipart/form-data POST リクエストを送信する（live_edit 等に使用）。
+    pub(crate) async fn post_web_multipart(
+        &self,
+        url: &str,
+        form: Form,
+        referer: Option<&str>,
+    ) -> Result<Value, String> {
+        let mut headers = self.get_web_headers_for_url(url, referer).await;
+        // Content-Type は reqwest が multipart boundary 付きで自動設定するので削除
+        headers.remove("Content-Type");
+
+        let resp = self
+            .client
+            .post(url)
+            .headers(headers)
+            .multipart(form)
+            .send()
+            .await
+            .map_err(|e| e.to_string())?;
+
+        let status = resp.status();
+        if status.is_success() {
+            return resp.json::<Value>().await.map_err(|e| e.to_string());
+        }
+        Err(format!("HTTP {}", status))
+    }
+
+    /// Web ブラウザ風ヘッダーで form-encoded POST リクエストを送信する。
+    pub(crate) async fn post_web_form(
+        &self,
+        url: &str,
+        form: HashMap<String, String>,
+        referer: Option<&str>,
+    ) -> Result<Value, String> {
+        let mut headers = self.get_web_headers_for_url(url, referer).await;
+        headers.insert(
+            "Content-Type",
+            HeaderValue::from_static("application/x-www-form-urlencoded;charset=UTF-8"),
+        );
+
+        let body = encode_form(&form);
+        for attempt in 0..3 {
+            let resp = match self
+                .client
+                .post(url)
+                .headers(headers.clone())
+                .body(body.clone())
+                .send()
+                .await
+            {
+                Ok(resp) => resp,
+                Err(err) => {
+                    if attempt < 2 && is_retryable_transport_error(&err) {
+                        sleep(retry_delay(attempt)).await;
+                        continue;
+                    }
+                    return Err(err.to_string());
+                }
+            };
+
+            let status = resp.status();
+            if status.is_success() {
+                return resp.json::<Value>().await.map_err(|e| e.to_string());
+            }
+
+            if attempt < 2 && is_retryable_status(status.as_u16()) {
+                sleep(retry_delay(attempt)).await;
+                continue;
+            }
+
+            return Err(format!("HTTP {}", status));
+        }
+
+        Err("HTTP request failed".to_string())
+    }
+
     /// JSON ボディの POST リクエストを送信して JSON レスポンスを取得する。
     pub(crate) async fn post_json_body(
         &self,
@@ -326,6 +566,7 @@ impl MirrativClient {
         *self.mr_id.write().await = String::new();
         *self.unique.write().await = String::new();
         *self.authed.write().await = false;
+        self.clear_csrf_token().await;
     }
 
     /// ログイン済みかどうかを返す（mr_id と unique の両方が揃っているか）
@@ -486,6 +727,39 @@ fn parse_set_cookie(value: &str) -> Option<(String, String)> {
         return None;
     }
     Some((name.to_string(), val.to_string()))
+}
+
+/// HTML から `<meta name="csrf-token" content="...">` の値を抽出する
+fn extract_csrf_token(html: &str) -> Option<String> {
+    // パターン: <meta name="csrf-token" content="TOKEN">
+    // name と content の順序は問わない
+    let lower = html.to_lowercase();
+    let mut pos = 0;
+    while let Some(idx) = lower[pos..].find("<meta ") {
+        let start = pos + idx;
+        let end = match lower[start..].find('>') {
+            Some(e) => start + e + 1,
+            None => break,
+        };
+        let tag = &html[start..end];
+        let tag_lower = &lower[start..end];
+
+        if tag_lower.contains("csrf-token") {
+            // content="..." を抽出
+            if let Some(ci) = tag_lower.find("content=") {
+                let rest = &tag[ci + 8..];
+                let quote = rest.chars().next()?;
+                if quote == '"' || quote == '\'' {
+                    let inner = &rest[1..];
+                    if let Some(end_q) = inner.find(quote) {
+                        return Some(inner[..end_q].to_string());
+                    }
+                }
+            }
+        }
+        pos = end;
+    }
+    None
 }
 
 /// 指定長のランダムな 16 進文字列を生成する（端末 ID 等に使用）

@@ -9,6 +9,20 @@ use tauri::{Emitter, Manager, WindowEvent};
 /// フロントエンドからのログをターミナルに出力する
 #[tauri::command]
 fn frontend_log(level: String, tag: String, message: String) {
+    #[cfg(not(debug_assertions))]
+    {
+        let verbose = std::env::var("MIRRATIV_VERBOSE_FRONTEND_LOG")
+            .map(|v| v == "1")
+            .unwrap_or(false);
+        if !verbose && level != "error" {
+            return;
+        }
+        if !verbose && level == "error" {
+            eprintln!("\x1b[31m[{}]\x1b[0m frontend runtime error", tag);
+            return;
+        }
+    }
+
     match level.as_str() {
         "error" => eprintln!("\x1b[31m[{}]\x1b[0m {}", tag, message),
         "warn"  => eprintln!("\x1b[33m[{}]\x1b[0m {}", tag, message),
@@ -98,6 +112,7 @@ pub fn run() {
             mirrativ::client::app::get_my_app,
             mirrativ::client::app::get_recommend_apps,
             mirrativ::client::app::get_app_appeal_banners,
+            mirrativ::client::app::get_app_search,
             // GET API - ギフト/ランキング
             mirrativ::client::gift::get_gift_ranking,
             mirrativ::client::gift::get_gift_ranking_by_url,
@@ -145,6 +160,13 @@ pub fn run() {
             mirrativ::client::user::post_user_demographic,
             mirrativ::client::user::check_minor,
             mirrativ::client::live::live_polling,
+            mirrativ::client::live::live_create,
+            mirrativ::client::live::live_edit,
+            mirrativ::client::live::live_start,
+            mirrativ::client::live::live_end,
+            mirrativ::client::live::live_capture_image,
+            mirrativ::client::live::live_heartbeat,
+            mirrativ::client::live::renew_streaming_key,
             mirrativ::client::mission::receive_mission_reward,
             mirrativ::client::app::add_my_app,
             mirrativ::client::closet::apply_preset,
